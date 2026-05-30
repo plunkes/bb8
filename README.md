@@ -19,11 +19,8 @@ Este repositório contém o material da disciplina *Programação de Robôs Móv
 
 ### 1. Clonar o repositório
 
-Acesse a pasta `src` do seu workspace ROS 2:
-
 ```bash
-cd ~/ros2_ws/src/
-git clone https://github.com/matheusbg8/prm_2026.git
+git clone https://github.com/plunkes/prm-2026.git 
 ````
 
 ### 2. Instalar dependências
@@ -31,7 +28,7 @@ git clone https://github.com/matheusbg8/prm_2026.git
 Instale as dependências do pacote com:
 
 ```bash
-cd ~/ros2_ws
+cd prm-2026
 rosdep install --from-paths src --ignore-src -r -y
 ```
 
@@ -42,7 +39,7 @@ rosdep install --from-paths src --ignore-src -r -y
 Certifique-se de estar na **raiz do seu workspace** (geralmente `~/ros2_ws`) antes de compilar:
 
 ```bash
-cd ~/ros2_ws
+cd ~/prm_ws
 colcon build --symlink-install --packages-select prm_2026
 ```
 
