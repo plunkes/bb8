@@ -1,64 +1,63 @@
 #!/usr/bin/env python3
+"""FSM de alto nível: orquestra m-explore (exploração de fronteiras) e Nav2.
+
+Fluxo:
+  INICIALIZANDO -> espera o Nav2 (action server navigate_to_pose) ficar pronto.
+  EXPLORANDO    -> libera o explore_lite (explore/resume=True); ele manda goals
+                   de fronteira ao Nav2 e o mapa cresce via slam_toolbox.
+  NAVEGANDO_PARA_BANDEIRA -> ao detectar a bandeira, pausa o explore
+                   (explore/resume=False, que cancela o goal atual no Nav2),
+                   calcula a pose à frente da flag (bearing da câmera + range do
+                   LIDAR), transforma para o frame 'map' e envia um NavigateToPose.
+  POSICIONANDO_FINAL -> chegou: para, estende o braço e conclui a missão.
+
+O Nav2 é dono do /cmd_vel (repassado ao diff_drive pelo relay_cmd_vel). Esta FSM
+não publica velocidade — só braço (/gripper_controller/commands) e o sinal de
+controle do explore.
+"""
+
 import math
-import time
-from collections import deque
 from enum import Enum, auto
 
 import rclpy
+from rclpy.action import ActionClient
+from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.time import Time
 
-from geometry_msgs.msg import Pose2D, Twist
-from nav_msgs.msg import Odometry
+import tf2_geometry_msgs  # noqa: F401 — registra PoseStamped no tf2 (efeito colateral)
+from action_msgs.msg import GoalStatus
+from geometry_msgs.msg import Pose2D, PoseStamped
+from nav2_msgs.action import NavigateToPose
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Float32, Float64MultiArray
+from std_msgs.msg import Bool, Float32, Float64MultiArray
+from tf2_ros import Buffer, TransformListener
 
 
 class Estado(Enum):
-    SEGUINDO_PAREDE = auto()
-    DETECTOU_BANDEIRA = auto()
+    INICIALIZANDO = auto()
+    EXPLORANDO = auto()
     NAVEGANDO_PARA_BANDEIRA = auto()
     POSICIONANDO_FINAL = auto()
-    EVITANDO_LOOP = auto()
 
 
-# Joint order for /gripper_controller/commands:
+# Ordem das juntas em /gripper_controller/commands:
 #   [gripper_extension, arm_elbow, right_gripper_joint, left_gripper_joint]
-ARM_RETRAIDO  = [-1.5, -1.5, 0.0, 0.0]  # folded against body during navigation
-ARM_ESTENDIDO = [ 0.0,  0.0, 0.0, 0.0]  # fully forward; tip reaches ~0.67 m from LIDAR centre
+ARM_RETRAIDO = [-1.5, -1.5, 0.0, 0.0]  # recolhido contra o corpo durante a navegação
+ARM_ESTENDIDO = [0.0, 0.0, 0.0, 0.0]  # totalmente à frente ao concluir
 
-# LIDAR safety and wall-follower
-DIST_SEGURA_FRENTE = 0.40  # [m] emergency stop — below this the robot halts immediately
-DIST_ALVO_PAREDE   = 0.50  # [m] desired right-wall clearance for P-controller
-DIST_BUSCA_PAREDE  = 1.8   # [m] if every ray is farther than this, no wall is near → go straight
-WALL_KP            = 2.2   # [rad/s / m] proportional gain: ω = -KP × (right_dist − target)
-VEL_SEGUINDO       = 0.6   # [m/s] forward speed during wall-following
-OMEGA_MAX          = 1.0   # [rad/s] angular velocity clamp for all states
+# Detecção / aproximação da bandeira
+FLAG_DETEC_MIN_TICKS = 3  # ticks consecutivos de detecção antes de comutar p/ navegação
+FLAG_PERDA_MAX = 25  # ticks sem detecção, durante a navegação, antes de re-explorar
+STOP_DIST = 0.75  # [m] distância de parada à frente da flag (braço alcança o mastro)
+SETOR_BANDEIRA = math.radians(
+    8.0
+)  # meia-largura do setor LIDAR amostrado em torno do bearing
+RANGE_FALLBACK = 2.5  # [m] estimativa de distância se o LIDAR não retornar no setor
+NAV_RETRY_MAX = 3  # tentativas de reenvio de goal antes de desistir e re-explorar
 
-# Flag navigation
-FLAG_KP          = 1.8   # [rad/s / rad] bearing P-gain: ω = KP × bearing
-VEL_BANDEIRA     = 0.6   # [m/s] forward speed when heading toward the flag
-FLAG_ALINHA_TOL  = 0.20  # [rad] max bearing error to be considered "aligned" (~11°)
-DIST_PARAR_FINAL = 0.75  # [m] stop distance in POSICIONANDO — chosen so arm tip clears flag pole
-FLAG_PERDA_MAX   = 10    # [ticks] consecutive no-detection ticks before giving up and re-exploring
-
-# Obstacle avoidance within NAVEGANDO_PARA_BANDEIRA
-DIST_NAV_DESVIO = 0.65  # [m] obstacle closer than this switches to contorno wall-follow mode
-NAV_DESVIO_KP   = 2.2   # [rad/s] fixed turn rate applied when emergency-stopping near obstacle
-
-# POSICIONANDO entry gate (camera-only — LIDAR cannot distinguish flag from cylinder)
-FLAG_MIN_AREA_POSICIONANDO = 200  # [px] flag pixel area ≥ this ≈ flag within ~0.85 m
-
-# Loop detection via occupancy grid
-GRID_RES       = 0.30  # [m] grid cell size for position discretisation
-HIST_LEN       = 60    # [cells] sliding window length; limits memory regardless of path length
-REVISITAS_LOOP = 6     # revisits to same cell before triggering EVITANDO_LOOP
-
-# Open-loop escape manoeuvre durations
-TEMPO_GIRO_FUGA = 2.5  # [s] phase 0: spin in place to break the loop
-TEMPO_FWD_FUGA  = 3.5  # [s] phase 1: drive straight to reach a new area
-
-FREQ_CONTROLE = 20  # [Hz] main control-loop rate
+FREQ_CONTROLE = 10  # [Hz] taxa do laço principal da FSM
 
 
 class ControleRobo(Node):
@@ -71,62 +70,54 @@ class ControleRobo(Node):
             depth=1,
         )
 
+        # --- Entradas ---
         self.create_subscription(LaserScan, "/scan", self._cb_scan, qos_be)
-        self.create_subscription(Odometry, "/odom_gt", self._cb_odom, qos_be)
         self.create_subscription(Pose2D, "/vision/flag_detection", self._cb_visao, 10)
         self.create_subscription(Float32, "/vision/flag_bearing", self._cb_bearing, 10)
 
-        self._pub_cmd = self.create_publisher(Twist, "/cmd_vel", 10)
+        # --- Saídas ---
         self._pub_braco = self.create_publisher(
             Float64MultiArray, "/gripper_controller/commands", 10
         )
+        # Controle do explore_lite: True retoma, False pausa (e cancela goal no Nav2).
+        self._pub_explore = self.create_publisher(Bool, "explore/resume", 10)
 
-        self._estado = Estado.SEGUINDO_PAREDE
-        self._scan   = None
-        self._pos_x  = 0.0
-        self._pos_y  = 0.0
+        # --- TF: usado para transformar a pose da bandeira base_link -> map ---
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
 
+        # --- Action client do Nav2 ---
+        self._nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
+
+        # --- Estado interno ---
+        self._estado = Estado.INICIALIZANDO
+        self._scan = None
         self._bandeira_detectada = False
-        self._flag_bearing       = 0.0   # [rad] positive = flag to the left
-        self._flag_area          = 0.0   # [px]  pixel count from vision_processor
-        self._flag_perda_ticks   = 0     # consecutive ticks without flag detection
-
-        # Loop detection: discretise odometry into grid cells, count revisits
-        self._historico_celulas = deque(maxlen=HIST_LEN)
-        self._contagem_celulas  = {}
-
-        # EVITANDO_LOOP open-loop escape
-        self._fase_fuga    = 0    # 0 = spinning, 1 = driving forward
-        self._t_fuga_inicio = 0.0
-
+        self._flag_bearing = 0.0  # [rad] + = bandeira à esquerda
+        self._flag_detec_ticks = 0  # ticks consecutivos COM detecção
+        self._flag_perda_ticks = 0  # ticks consecutivos SEM detecção
         self._missao_completa = False
-        self._braco_estado    = None  # last sent arm command string; avoids redundant publishes
+        self._braco_estado = None  # último comando de braço enviado (evita republicar)
 
-        # NAVEGANDO sub-mode: "direto" steers to flag, "contornando" wall-follows an obstacle
-        self._nav_modo      = "direto"
-        self._contorno_lado = 1.0  # +1 = obstacle on right (go left), -1 = obstacle on left (go right)
+        # Acompanhamento do goal do Nav2
+        self._goal_handle = None
+        self._nav_status = None  # None | 'pendente' | 'sucesso' | 'falha'
+        self._nav_retries = 0
 
-        self._timer_init = self.create_timer(1.5, self._retrair_braco_inicial)
+        self._timer_init = self.create_timer(3, self._retrair_braco_inicial)
         self.create_timer(1.0 / FREQ_CONTROLE, self._loop)
 
-        self.get_logger().info("[FSM] Estado inicial: SEGUINDO_PAREDE")
+        self.get_logger().info("[FSM] Estado inicial: INICIALIZANDO (aguardando Nav2)")
 
+    # ------------------------------------------------------------------ #
+    # Callbacks de sensores
+    # ------------------------------------------------------------------ #
     def _cb_scan(self, msg):
         self._scan = msg
 
-    def _cb_odom(self, msg):
-        self._pos_x = msg.pose.pose.position.x
-        self._pos_y = msg.pose.pose.position.y
-        self._atualiza_historico()
-
     def _cb_visao(self, msg):
-        # msg.theta > 0 means flag detected; msg.y carries pixel area (not centroid row)
-        if msg.theta > 0.5:
-            self._bandeira_detectada = True
-            self._flag_area = msg.y
-        else:
-            self._bandeira_detectada = False
-            self._flag_area = 0.0
+        # theta > 0.5 indica bandeira detectada.
+        self._bandeira_detectada = msg.theta > 0.5
 
     def _cb_bearing(self, msg):
         self._flag_bearing = msg.data
@@ -135,228 +126,247 @@ class ControleRobo(Node):
         self._cmd_braco(ARM_RETRAIDO)
         self._timer_init.cancel()
 
+    # ------------------------------------------------------------------ #
+    # Laço principal
+    # ------------------------------------------------------------------ #
     def _loop(self):
-        if self._scan is None or self._missao_completa:
+        if self._missao_completa:
             return
-        self._transicionar()
-        self._executar_estado()
 
-    def _set_estado(self, novo):
-        anterior = self._estado
-        self._estado = novo
-        self.get_logger().info(
-            f"[FSM] Alteração de Estado: {anterior.name} -> {novo.name}"
-        )
-        self._ao_entrar(novo)
+        # Contadores de detecção (válidos em qualquer estado)
+        if self._bandeira_detectada:
+            self._flag_detec_ticks += 1
+            self._flag_perda_ticks = 0
+        else:
+            self._flag_detec_ticks = 0
+            self._flag_perda_ticks += 1
 
-    def _ao_entrar(self, estado):
-        if estado == Estado.SEGUINDO_PAREDE:
-            self._cmd_braco(ARM_RETRAIDO)
-            self._contagem_celulas.clear()
-            self._historico_celulas.clear()
-            self._flag_perda_ticks = 0
-        elif estado == Estado.NAVEGANDO_PARA_BANDEIRA:
-            self._flag_perda_ticks = 0
-            self._nav_modo      = "direto"
-            self._contorno_lado = 1.0
-        elif estado == Estado.POSICIONANDO_FINAL:
-            self._flag_perda_ticks = 0
-        elif estado == Estado.EVITANDO_LOOP:
-            self._fase_fuga     = 0
-            self._t_fuga_inicio = time.monotonic()
-
-    def _transicionar(self):
         e = self._estado
-        if e == Estado.SEGUINDO_PAREDE:
-            if self._bandeira_detectada:
-                self._set_estado(Estado.DETECTOU_BANDEIRA)
-        elif e == Estado.DETECTOU_BANDEIRA:
-            self._set_estado(Estado.NAVEGANDO_PARA_BANDEIRA)
-        elif e == Estado.NAVEGANDO_PARA_BANDEIRA:
-            if not self._bandeira_detectada:
-                self._flag_perda_ticks += 1
-                if self._flag_perda_ticks > FLAG_PERDA_MAX:
-                    self._set_estado(Estado.SEGUINDO_PAREDE)
-            else:
-                self._flag_perda_ticks = 0
-
-    def _executar_estado(self):
-        e = self._estado
-        if e == Estado.SEGUINDO_PAREDE:
-            self._exec_seguindo_parede()
-        elif e == Estado.DETECTOU_BANDEIRA:
-            self._parar()
+        if e == Estado.INICIALIZANDO:
+            self._exec_inicializando()
+        elif e == Estado.EXPLORANDO:
+            self._exec_explorando()
         elif e == Estado.NAVEGANDO_PARA_BANDEIRA:
             self._exec_navegando()
         elif e == Estado.POSICIONANDO_FINAL:
             self._exec_posicionando()
-        elif e == Estado.EVITANDO_LOOP:
-            self._exec_evitando_loop()
 
-    def _exec_seguindo_parede(self):
-        frente  = self._setor_min(0.0,   25.0)
-        direita = self._setor_min(270.0, 30.0)
+    def _set_estado(self, novo):
+        anterior = self._estado
+        self._estado = novo
+        self.get_logger().info(f"[FSM] {anterior.name} -> {novo.name}")
+        self._ao_entrar(novo)
 
-        if frente < DIST_SEGURA_FRENTE:
-            self._send_vel(0.0, 0.8)
-            return
+    def _ao_entrar(self, estado):
+        if estado == Estado.EXPLORANDO:
+            self._set_explore(True)  # libera o m-explore
+        elif estado == Estado.NAVEGANDO_PARA_BANDEIRA:
+            self._set_explore(False)  # pausa o m-explore (cancela goal no Nav2)
+            self._nav_retries = 0
+            self._nav_status = None
+            self._goal_handle = None
+            self._enviar_goal_bandeira()
+        elif estado == Estado.POSICIONANDO_FINAL:
+            self._set_explore(False)
+            self._concluir_missao()
 
-        validos = [
-            r for r in self._scan.ranges
-            if not math.isinf(r) and not math.isnan(r)
-            and self._scan.range_min <= r <= self._scan.range_max
-        ]
-        min_geral = min(validos) if validos else float("inf")
-
-        if min_geral > DIST_BUSCA_PAREDE:
-            self._send_vel(VEL_SEGUINDO, 0.0)
+    # ------------------------------------------------------------------ #
+    # Estados
+    # ------------------------------------------------------------------ #
+    def _exec_inicializando(self):
+        # Espera o Nav2 expor o action server antes de começar a explorar.
+        if self._nav_client.server_is_ready():
+            self.get_logger().info("[FSM] Nav2 pronto.")
+            self._set_estado(Estado.EXPLORANDO)
         else:
-            erro  = direita - DIST_ALVO_PAREDE
-            omega = max(-OMEGA_MAX, min(OMEGA_MAX, -WALL_KP * erro))
-            self._send_vel(VEL_SEGUINDO, omega)
-
-        if self._checar_loop():
-            self._set_estado(Estado.EVITANDO_LOOP)
-
-    def _exec_navegando(self):
-        frente   = self._setor_min(0.0,   25.0)
-        esquerda = self._setor_min(60.0,  30.0)
-        direita  = self._setor_min(300.0, 30.0)
-
-        bearing  = self._flag_bearing
-        alinhado = self._bandeira_detectada and abs(bearing) <= FLAG_ALINHA_TOL
-
-        # LIDAR cannot distinguish flag from cylinder, so the transition is camera-only:
-        # large pixel area means the flag is genuinely close and centred.
-        if alinhado and self._flag_area >= FLAG_MIN_AREA_POSICIONANDO:
-            self._nav_modo = "direto"
-            self._set_estado(Estado.POSICIONANDO_FINAL)
-            return
-
-        if frente < DIST_SEGURA_FRENTE:
-            omega_safe = NAV_DESVIO_KP if direita < esquerda else -NAV_DESVIO_KP
-            self._send_vel(0.0, float(max(-2.0, min(2.0, omega_safe))))
-            return
-
-        obstacle_in_path = frente < DIST_NAV_DESVIO
-
-        if obstacle_in_path and self._nav_modo == "direto":
-            self._nav_modo      = "contornando"
-            self._contorno_lado = 1.0 if esquerda > direita else -1.0
-
-        if not obstacle_in_path and self._nav_modo == "contornando":
-            self._nav_modo = "direto"
-
-        if self._nav_modo == "contornando":
-            if self._contorno_lado > 0:  # obstacle on right — track right wall, turn left
-                erro  = direita - DIST_ALVO_PAREDE
-                omega = float(max(0.3, min(OMEGA_MAX, -WALL_KP * erro)))
-            else:                        # obstacle on left — track left wall, turn right
-                erro  = esquerda - DIST_ALVO_PAREDE
-                omega = float(min(-0.3, max(-OMEGA_MAX, WALL_KP * erro)))
-            speed = float(VEL_BANDEIRA * max(0.3, frente / DIST_NAV_DESVIO))
-            self._send_vel(speed, omega)
-        else:
-            omega_flag = FLAG_KP * bearing if self._bandeira_detectada else 0.0
-            if obstacle_in_path:
-                # Blend flag heading with avoidance; weight proportional to obstacle proximity
-                w         = (DIST_NAV_DESVIO - frente) / DIST_NAV_DESVIO
-                omega_obs = NAV_DESVIO_KP if direita < esquerda else -NAV_DESVIO_KP
-                omega     = (1.0 - w) * omega_flag + w * omega_obs
-                speed     = VEL_BANDEIRA * max(0.3, frente / DIST_NAV_DESVIO)
-            else:
-                omega = omega_flag
-                speed = VEL_BANDEIRA if alinhado else 0.0
-            self._send_vel(
-                float(max(0.0, speed)),
-                float(max(-2.0, min(2.0, omega))),
+            self.get_logger().info(
+                "[FSM] Aguardando action server navigate_to_pose...",
+                throttle_duration_sec=3.0,
             )
 
-    def _exec_posicionando(self):
-        frente = self._setor_min(0.0, 20.0)
-
-        if frente > DIST_PARAR_FINAL:
-            bearing = self._flag_bearing
-            omega   = max(-1.0, min(1.0, FLAG_KP * 0.5 * bearing))
-            self._send_vel(0.15, omega)
-        elif self._bandeira_detectada and self._flag_area >= FLAG_MIN_AREA_POSICIONANDO:
-            self._parar()
-            if not self._missao_completa:
-                self._missao_completa = True
-                self._cmd_braco(ARM_ESTENDIDO)
-                self.get_logger().info(
-                    "\n"
-                    "╔══════════════════════════════════════════╗\n"
-                    "║            Congratulations!              ║\n"
-                    "║    Bandeira alcançada com sucesso!       ║\n"
-                    "╚══════════════════════════════════════════╝"
-                )
-        else:
-            # Something stopped us but the flag area is too small — likely a cylinder; retry.
+    def _exec_explorando(self):
+        # O explore_lite cuida da navegação; só vigiamos a bandeira.
+        self._cmd_braco(ARM_RETRAIDO)
+        if self._flag_detec_ticks >= FLAG_DETEC_MIN_TICKS:
             self._set_estado(Estado.NAVEGANDO_PARA_BANDEIRA)
 
-    def _exec_evitando_loop(self):
-        decorrido = time.monotonic() - self._t_fuga_inicio
-
-        if self._fase_fuga == 0:
-            if decorrido < TEMPO_GIRO_FUGA:
-                self._send_vel(0.0, 1.0)
+    def _exec_navegando(self):
+        # 1) Resultado do goal atual
+        if self._nav_status == "sucesso":
+            self._set_estado(Estado.POSICIONANDO_FINAL)
+            return
+        if self._nav_status == "falha":
+            self._nav_status = None
+            if self._nav_retries < NAV_RETRY_MAX and self._bandeira_detectada:
+                self._nav_retries += 1
+                self.get_logger().warn(
+                    f"[FSM] Goal falhou — retry {self._nav_retries}/{NAV_RETRY_MAX}"
+                )
+                self._enviar_goal_bandeira()
             else:
-                self._fase_fuga     = 1
-                self._t_fuga_inicio = time.monotonic()
-        else:
-            frente = self._setor_min(0.0, 25.0)
-            if decorrido < TEMPO_FWD_FUGA and frente > DIST_SEGURA_FRENTE:
-                self._send_vel(VEL_SEGUINDO, 0.0)
-            else:
-                self._set_estado(Estado.SEGUINDO_PAREDE)
+                self.get_logger().warn(
+                    "[FSM] Desistindo do goal — voltando a explorar."
+                )
+                self._cancelar_goal()
+                self._set_estado(Estado.EXPLORANDO)
+            return
 
-    def _atualiza_historico(self):
-        cx     = int(self._pos_x / GRID_RES)
-        cy     = int(self._pos_y / GRID_RES)
-        celula = (cx, cy)
-        if not self._historico_celulas or self._historico_celulas[-1] != celula:
-            self._historico_celulas.append(celula)
-            self._contagem_celulas[celula] = self._contagem_celulas.get(celula, 0) + 1
+        # 2) Perdeu a bandeira de vista por tempo demais -> volta a explorar
+        if self._flag_perda_ticks > FLAG_PERDA_MAX:
+            self.get_logger().warn("[FSM] Bandeira perdida — voltando a explorar.")
+            self._cancelar_goal()
+            self._set_estado(Estado.EXPLORANDO)
 
-    def _checar_loop(self):
-        if not self._contagem_celulas:
-            return False
-        return max(self._contagem_celulas.values()) >= REVISITAS_LOOP
+    def _exec_posicionando(self):
+        # A missão já foi concluída em _ao_entrar; nada a fazer.
+        pass
 
-    def _setor_min(self, centro_graus, meia_largura_graus):
-        # Returns the minimum valid range in the angular sector [centre ± half_width].
-        # Uses (angle − c + π) mod 2π − π to wrap the difference to [−π, π],
-        # which correctly handles the 0°/360° seam in the LIDAR data.
+    # ------------------------------------------------------------------ #
+    # Cálculo e envio do goal da bandeira
+    # ------------------------------------------------------------------ #
+    def _enviar_goal_bandeira(self):
+        pose = self._calcular_pose_bandeira()
+        if pose is None:
+            # Sem TF/scan ainda: tenta de novo no próximo tick (não comuta estado).
+            self.get_logger().warn(
+                "[FSM] Não foi possível calcular a pose da bandeira ainda.",
+                throttle_duration_sec=1.0,
+            )
+            self._nav_status = "falha"
+            return
+
+        if not self._nav_client.server_is_ready():
+            self._nav_status = "falha"
+            return
+
+        goal = NavigateToPose.Goal()
+        goal.pose = pose
+        self._nav_status = "pendente"
+        self.get_logger().info(
+            f"[FSM] Enviando goal da bandeira: "
+            f"({pose.pose.position.x:.2f}, {pose.pose.position.y:.2f}) [map]"
+        )
+        send_future = self._nav_client.send_goal_async(goal)
+        send_future.add_done_callback(self._on_goal_response)
+
+    def _calcular_pose_bandeira(self):
+        """Funde bearing (câmera) + range (LIDAR) -> PoseStamped à frente da flag em 'map'."""
+        if self._scan is None:
+            return None
+
+        bearing = self._flag_bearing
+        rng = self._range_no_setor(bearing, SETOR_BANDEIRA)
+        if rng is None:
+            rng = RANGE_FALLBACK
+
+        # Distância do goal: para STOP_DIST antes da flag. Se já estamos perto,
+        # mira a própria posição da flag (clamp >= 0) — o controlador do Nav2 para.
+        goal_rng = max(0.0, rng - STOP_DIST)
+
+        # Posição na direção do bearing, no frame base_link (+x à frente, +y à esquerda).
+        gx = goal_rng * math.cos(bearing)
+        gy = goal_rng * math.sin(bearing)
+
+        pose_base = PoseStamped()
+        pose_base.header.frame_id = "base_link"
+        pose_base.header.stamp = Time().to_msg()  # tempo 0 -> usa o TF mais recente
+        pose_base.pose.position.x = gx
+        pose_base.pose.position.y = gy
+        pose_base.pose.position.z = 0.0
+        qz, qw = math.sin(bearing / 2.0), math.cos(bearing / 2.0)  # yaw = bearing
+        pose_base.pose.orientation.z = qz
+        pose_base.pose.orientation.w = qw
+
+        try:
+            pose_map = self._tf_buffer.transform(
+                pose_base, "map", timeout=Duration(seconds=0.3)
+            )
+        except Exception as exc:  # TransformException e afins
+            self.get_logger().warn(
+                f"[FSM] Falha ao transformar base_link->map: {exc}",
+                throttle_duration_sec=1.0,
+            )
+            return None
+
+        pose_map.header.stamp = self.get_clock().now().to_msg()
+        return pose_map
+
+    def _range_no_setor(self, centro_rad, meia_largura_rad):
+        """Menor range válido do LIDAR num setor [centro ± meia_largura]. None se vazio."""
         scan = self._scan
-        c    = math.radians(centro_graus)
-        hw   = math.radians(meia_largura_graus)
-        melhor = float("inf")
+        melhor = None
         for i, r in enumerate(scan.ranges):
             if math.isinf(r) or math.isnan(r):
                 continue
             if r < scan.range_min or r > scan.range_max:
                 continue
-            angulo = scan.angle_min + i * scan.angle_increment
-            diff   = (angulo - c + math.pi) % (2 * math.pi) - math.pi
-            if abs(diff) <= hw:
-                melhor = min(melhor, r)
+            ang = scan.angle_min + i * scan.angle_increment
+            diff = (ang - centro_rad + math.pi) % (2 * math.pi) - math.pi
+            if abs(diff) <= meia_largura_rad:
+                melhor = r if melhor is None else min(melhor, r)
         return melhor
 
-    def _send_vel(self, linear, angular):
-        msg = Twist()
-        msg.linear.x  = float(linear)
-        msg.angular.z = float(angular)
-        self._pub_cmd.publish(msg)
+    # ------------------------------------------------------------------ #
+    # Callbacks do action client (rodam na thread do executor)
+    # ------------------------------------------------------------------ #
+    def _on_goal_response(self, future):
+        handle = future.result()
+        if not handle.accepted:
+            self.get_logger().warn("[FSM] Goal REJEITADO pelo Nav2.")
+            self._goal_handle = None
+            self._nav_status = "falha"
+            return
+        self._goal_handle = handle
+        result_future = handle.get_result_async()
+        result_future.add_done_callback(self._on_goal_result)
 
-    def _parar(self):
-        self._send_vel(0.0, 0.0)
+    def _on_goal_result(self, future):
+        status = future.result().status
+        if status == GoalStatus.STATUS_SUCCEEDED:
+            self.get_logger().info("[FSM] Nav2 reportou goal ALCANÇADO.")
+            self._nav_status = "sucesso"
+        elif status == GoalStatus.STATUS_CANCELED:
+            # Cancelamento deliberado nosso — não marca como falha.
+            self.get_logger().info("[FSM] Goal cancelado.")
+        else:
+            self.get_logger().warn(
+                f"[FSM] Goal terminou sem sucesso (status={status})."
+            )
+            self._nav_status = "falha"
+        self._goal_handle = None
+
+    def _cancelar_goal(self):
+        if self._goal_handle is not None:
+            self._goal_handle.cancel_goal_async()
+            self._goal_handle = None
+        self._nav_status = None
+
+    # ------------------------------------------------------------------ #
+    # Conclusão da missão
+    # ------------------------------------------------------------------ #
+    def _concluir_missao(self):
+        self._cancelar_goal()
+        self._missao_completa = True
+        self._cmd_braco(ARM_ESTENDIDO)
+        self.get_logger().info(
+            "\n"
+            "╔══════════════════════════════════════════╗\n"
+            "║            Congratulations!              ║\n"
+            "║    Bandeira alcançada com sucesso!       ║\n"
+            "╚══════════════════════════════════════════╝"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Utilitários
+    # ------------------------------------------------------------------ #
+    def _set_explore(self, ativar):
+        self._pub_explore.publish(Bool(data=bool(ativar)))
 
     def _cmd_braco(self, posicoes):
         chave = str(posicoes)
         if self._braco_estado == chave:
             return
-        msg      = Float64MultiArray()
+        msg = Float64MultiArray()
         msg.data = posicoes
         self._pub_braco.publish(msg)
         self._braco_estado = chave

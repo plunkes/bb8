@@ -20,12 +20,17 @@ class GroundTruthOdomPublisher(Node):
         # Publicador de odometria ground truth
         self.odom_pub = self.create_publisher(Odometry, '/odom_gt', 10)
 
-        # Broadcaster de TF: odom_gt -> base_link
+        # Broadcaster de TF: odom -> base_link
         self.tf_broadcaster = TransformBroadcaster(self)
 
-        # Base frame
-        self.base_frame = 'base_link'
-        self.odom_frame = 'odom_gt'
+        # Frames (parametrizáveis). Para a stack SLAM/Nav2 usamos a pose
+        # ground-truth como a camada de odometria, então o frame pai do TF
+        # é 'odom' (e não 'odom_gt'): slam_toolbox publica 'map -> odom' por
+        # cima, completando a árvore map -> odom -> base_link.
+        self.declare_parameter('base_frame', 'base_link')
+        self.declare_parameter('odom_frame', 'odom')
+        self.base_frame = self.get_parameter('base_frame').value
+        self.odom_frame = self.get_parameter('odom_frame').value
 
     def pose_callback(self, msg: Pose):
         now = self.get_clock().now().to_msg()

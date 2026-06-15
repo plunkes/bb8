@@ -1,0 +1,31 @@
+# explore_lite (m-explore-ros2) – exploração de fronteiras.
+# Usa a global costmap do Nav2 (com inflação) para escolher fronteiras seguras
+# e envia goals NavigateToPose ao Nav2. A FSM (controle_robo) controla a
+# pausa/retomada via tópico explore/resume (std_msgs/Bool).
+explore_node:
+  ros__parameters:
+    use_sim_time: true
+
+    robot_base_frame: base_link
+    # IMPORTANTE: usar o /map CRU do slam_toolbox, e NÃO a costmap global do Nav2.
+    # A costmap do Nav2 tem inflação (custos 1–99) que "come" a banda de células
+    # livres (0) na borda do desconhecido — sem células FREE(0) adjacentes ao
+    # desconhecido, o explore reporta "No frontiers found" e para imediatamente.
+    # O /map do SLAM é cru (0=livre, 100=ocupado, -1=desconhecido) → fronteiras OK.
+    # O min_frontier_size abaixo já garante que fronteiras minúsculas sejam ignoradas;
+    # o desvio de obstáculos com inflação fica por conta do Nav2 ao executar o goal.
+    costmap_topic: /map
+    costmap_updates_topic: /map_updates
+    visualize: true
+
+    planner_frequency: 0.33      # [Hz] re-planeja fronteiras a cada ~3 s
+    progress_timeout: 30.0       # [s] abandona um goal travado
+    return_to_init: false        # não volta ao início; a FSM assume o controle
+
+    # Pesos da função de custo de fronteiras
+    potential_scale: 3.0
+    orientation_scale: 0.0
+    gain_scale: 1.0
+
+    transform_tolerance: 0.3
+    min_frontier_size: 0.5       # [m] ignora fronteiras menores que isto

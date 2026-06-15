@@ -38,8 +38,9 @@ diff_drive_base_controller:
     pose_covariance_diagonal: [0.001, 0.001, 0.0, 0.0, 0.0, 0.01]
     twist_covariance_diagonal: [0.001, 0.0, 0.0, 0.0, 0.0, 0.01]
 
-    publish_odom: true # <--- desativa /odom
-    enable_odom_tf: true # <--- desativa TF odom -> base_link
+    publish_odom: true   # publica o tópico /diff_drive_base_controller/odom (inofensivo)
+    enable_odom_tf: false # NÃO publica TF odom -> base_link: quem publica é o
+                          # ground_truth_odometry (frame 'odom'). Evita base_link com dois pais.
 
     open_loop: true
 
