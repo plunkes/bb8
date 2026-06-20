@@ -7,6 +7,7 @@ Panels:
         - /Global Options1
         - /Grid1
         - /RobotModel1/Description Topic1
+        - /TF1
         - /LaserScan1
         - /LaserScan1/Topic1
         - /Image1
@@ -183,33 +184,34 @@ Visualization Manager:
       Show Axes: true
       Show Names: true
       Tree:
+        base_link:
+          base_footprint:
+            {}
+          camera_link:
+            camera_frame:
+              {}
+          drivewhl_l_link:
+            {}
+          drivewhl_r_link:
+            {}
+          front_caster:
+            {}
+          imu_link:
+            {}
+          lidar_link:
+            {}
+          upper_arm:
+            gripper_pole:
+              left_gripper:
+                left_tip:
+                  {}
+              right_gripper:
+                right_tip:
+                  {}
         odom:
           {}
         odom_gt:
-          base_link:
-            base_footprint:
-              {}
-            camera_link:
-              camera_frame:
-                {}
-            drivewhl_l_link:
-              {}
-            drivewhl_r_link:
-              {}
-            front_caster:
-              {}
-            imu_link:
-              {}
-            lidar_link:
-              {}
-            upper_arm:
-              gripper_pole:
-                left_gripper:
-                  left_tip:
-                    {}
-                right_gripper:
-                  right_tip:
-                    {}
+          {}
       Update Interval: 0
       Value: true
     - Alpha: 1
@@ -238,10 +240,10 @@ Visualization Manager:
       Style: Flat Squares
       Topic:
         Depth: 5
-        Durability Policy: Transient Local
+        Durability Policy: Volatile
         Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Reliable
+        History Policy: System Default
+        Reliability Policy: Best Effort
         Value: /scan
       Use Fixed Frame: true
       Use rainbow: true
@@ -342,5 +344,5 @@ Window Geometry:
   Views:
     collapsed: false
   Width: 1804
-  X: 83
+  X: 2003
   Y: 33
