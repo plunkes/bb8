@@ -87,12 +87,12 @@ controller_server:
     FollowPath:
       plugin: dwb_core::DWBLocalPlanner
       debug_trajectory_details: true
-      min_vel_x: 0.0
+      min_vel_x: -0.26   # permite ré para manobrar/desencravar em espaço apertado
       min_vel_y: 0.0
       max_vel_x: 0.6
       max_vel_y: 0.0
       max_vel_theta: 1.5
-      min_speed_xy: 0.0
+      min_speed_xy: -0.26
       max_speed_xy: 0.6
       min_speed_theta: 0.0
       acc_lim_x: 2.0
@@ -103,7 +103,7 @@ controller_server:
       decel_lim_theta: -2.5
       vx_samples: 20
       vy_samples: 0
-      vtheta_samples: 20
+      vtheta_samples: 40   # amostragem angular mais fina p/ girar em corredor estreito
       sim_time: 1.5
       linear_granularity: 0.05
       angular_granularity: 0.025
@@ -155,8 +155,10 @@ local_costmap:
           obstacle_min_range: 0.0
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        cost_scaling_factor: 2.0   # era 3.0 — decaimento mais suave evita raspar quinas
-        inflation_radius: 0.55     # era 0.45
+        # decaimento íngreme + raio menor deixa um corredor de custo baixo entre
+        # cilindros, dando espaço pro robô girar/manobrar em vez de ficar preso.
+        cost_scaling_factor: 3.5
+        inflation_radius: 0.40
       always_send_full_costmap: true
 
 global_costmap:
@@ -191,8 +193,10 @@ global_costmap:
           obstacle_min_range: 0.0
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        cost_scaling_factor: 2.0   # era 3.0 — decaimento mais suave evita raspar quinas
-        inflation_radius: 0.55     # era 0.45
+        # decaimento íngreme + raio menor deixa um corredor de custo baixo entre
+        # cilindros, dando espaço pro robô girar/manobrar em vez de ficar preso.
+        cost_scaling_factor: 3.5
+        inflation_radius: 0.40
       always_send_full_costmap: true
 
 planner_server:

@@ -37,7 +37,7 @@ Visualization Manager:
         Z: 0
       Plane: XY
       Plane Cell Count: 50
-      Reference Frame: base_footprint
+      Reference Frame: map
       Value: true
     - Alpha: 0.6000000238418579
       Class: rviz_default_plugins/RobotModel
@@ -313,7 +313,7 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: base_footprint
+    Fixed Frame: map
     Frame Rate: 30
   Name: root
   Tools:
@@ -339,25 +339,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 4.912381172180176
+      Distance: 8.74007797241211
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0
-        Y: 0
-        Z: 0
+        X: -2.3874354362487793
+        Y: -1.0407618284225464
+        Z: -0.1565985083580017
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.019797682762146
+      Pitch: 1.074797511100769
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 5.290412902832031
+      Yaw: 4.730413436889648
     Saved: ~
 Window Geometry:
   Displays:

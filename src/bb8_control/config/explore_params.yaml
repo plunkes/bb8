@@ -23,8 +23,11 @@ explore_node:
     return_to_init: false        # não volta ao início; a FSM assume o controle
 
     # Pesos da função de custo de fronteiras
+    # potential_scale alto = prefere fronteiras PRÓXIMAS.
+    # orientation_scale > 0 = prefere fronteiras À FRENTE (evita giro de 180°
+    #   em corredor estreito, onde o robô não tem espaço pra virar).
     potential_scale: 3.0
-    orientation_scale: 0.0
+    orientation_scale: 0.6
     gain_scale: 1.0
 
     transform_tolerance: 0.3
