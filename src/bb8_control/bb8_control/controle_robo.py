@@ -51,12 +51,18 @@ class Estado(Enum):
 # Detecção / aproximação da bandeira
 FLAG_DETEC_MIN_TICKS = 3  # ticks consecutivos de detecção antes de comutar p/ navegação
 FLAG_PERDA_MAX = 25  # ticks sem detecção, durante a navegação, antes de re-explorar
-STOP_DIST = 0.75  # [m] distância de parada à frente da flag (braço alcança o mastro)
+STOP_DIST = 0.45  # [m] distância de parada à frente da flag (braço alcança o mastro)
 SETOR_BANDEIRA = math.radians(
     8.0
 )  # meia-largura do setor LIDAR amostrado em torno do bearing
 RANGE_FALLBACK = 2.5  # [m] estimativa de distância se o LIDAR não retornar no setor
 NAV_RETRY_MAX = 3  # tentativas de reenvio de goal antes de desistir e re-explorar
+
+# Critérios para ENTRAR em POSICIONANDO_FINAL (pegar a flag):
+FLAG_AREA_MIN_PX = 1500  # [px] flag ocupa >= isto na imagem => muito perto
+FLAG_ALIGN_MAX = math.radians(10.0)  # [rad] |bearing| máximo => alinhado com a flag
+FLAG_RANGE_MAX = 1.0  # [m] range do LIDAR até a flag p/ validar proximidade
+GOAL_REFRESH_TICKS = 10  # re-mira o goal de aproximação a cada ~1 s (rastreia a flag)
 
 FREQ_CONTROLE = 10  # [Hz] taxa do laço principal da FSM
 
@@ -95,8 +101,10 @@ class ControleRobo(Node):
         self._scan = None
         self._bandeira_detectada = False
         self._flag_bearing = 0.0  # [rad] + = bandeira à esquerda
+        self._flag_area = 0.0  # [px] área da flag na imagem (do vision_processor)
         self._flag_detec_ticks = 0  # ticks consecutivos COM detecção
         self._flag_perda_ticks = 0  # ticks consecutivos SEM detecção
+        self._goal_refresh_ticks = 0  # contador p/ re-mirar o goal de aproximação
         self._missao_completa = False
         self._pose_origem = None  # PoseStamped em 'map', gravada ao iniciar
 
@@ -116,8 +124,9 @@ class ControleRobo(Node):
         self._scan = msg
 
     def _cb_visao(self, msg):
-        # theta > 0.5 indica bandeira detectada.
+        # Pose2D do vision_processor: x=centroide_x, y=área[px], theta=1.0 se detectada.
         self._bandeira_detectada = msg.theta > 0.5
+        self._flag_area = msg.y
 
     def _cb_bearing(self, msg):
         self._flag_bearing = msg.data
@@ -163,6 +172,7 @@ class ControleRobo(Node):
             self._nav_retries = 0
             self._nav_status = None
             self._goal_handle = None
+            self._goal_refresh_ticks = 0
             self._enviar_goal_bandeira()
         elif estado == Estado.POSICIONANDO_FINAL:
             self._set_explore(False)
@@ -202,10 +212,23 @@ class ControleRobo(Node):
             self._set_estado(Estado.NAVEGANDO_PARA_BANDEIRA)
 
     def _exec_navegando(self):
-        # 1) Resultado do goal atual
-        if self._nav_status == "sucesso":
+        # 1) Chegou? alinhado + flag grande na imagem + perto pelo LIDAR -> pega.
+        if self._pronto_para_pegar():
+            self.get_logger().info(
+                "[FSM] Flag alinhada, grande e próxima -> POSICIONANDO_FINAL."
+            )
+            self._cancelar_goal()
             self._set_estado(Estado.POSICIONANDO_FINAL)
             return
+
+        # 2) Perdeu a bandeira de vista por tempo demais -> volta a explorar.
+        if self._flag_perda_ticks > FLAG_PERDA_MAX:
+            self.get_logger().warn("[FSM] Bandeira perdida — voltando a explorar.")
+            self._cancelar_goal()
+            self._set_estado(Estado.EXPLORANDO)
+            return
+
+        # 3) Goal de aproximação falhou -> retry; se esgotar, re-explora.
         if self._nav_status == "falha":
             self._nav_status = None
             if self._nav_retries < NAV_RETRY_MAX and self._bandeira_detectada:
@@ -222,11 +245,26 @@ class ControleRobo(Node):
                 self._set_estado(Estado.EXPLORANDO)
             return
 
-        # 2) Perdeu a bandeira de vista por tempo demais -> volta a explorar
-        if self._flag_perda_ticks > FLAG_PERDA_MAX:
-            self.get_logger().warn("[FSM] Bandeira perdida — voltando a explorar.")
-            self._cancelar_goal()
-            self._set_estado(Estado.EXPLORANDO)
+        # 4) Persegue: re-mira o goal periodicamente p/ rastrear a flag enquanto
+        #    se aproxima (o bearing/range vão refinando à medida que chega perto).
+        self._goal_refresh_ticks += 1
+        if self._goal_refresh_ticks >= GOAL_REFRESH_TICKS:
+            self._goal_refresh_ticks = 0
+            if self._bandeira_detectada:
+                self._enviar_goal_bandeira()
+
+    def _pronto_para_pegar(self):
+        """True se a flag está alinhada, grande na imagem e perto pelo LIDAR."""
+        if not self._bandeira_detectada:
+            return False
+        if abs(self._flag_bearing) > FLAG_ALIGN_MAX:
+            return False
+        if self._flag_area < FLAG_AREA_MIN_PX:
+            return False
+        rng = self._range_no_setor(self._flag_bearing, SETOR_BANDEIRA)
+        if rng is None or rng > FLAG_RANGE_MAX:
+            return False
+        return True
 
     def _exec_posicionando(self):
         # _pegar_flag (em _ao_entrar) já comutou para RETORNANDO_ORIGEM.
