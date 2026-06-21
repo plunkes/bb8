@@ -308,7 +308,10 @@
         <param name="min">-1.57075</param>
         <param name="max">0.2</param>
       </command_interface>
-      <state_interface name="position"/>
+      <!-- Início RETRAÍDO: braço recolhido contra o corpo já no spawn -->
+      <state_interface name="position">
+        <param name="initial_value">-1.5</param>
+      </state_interface>
       <state_interface name="velocity"/>
     </joint>
 
@@ -317,7 +320,9 @@
         <param name="min">-1.5708</param>
         <param name="max">0.5</param>
       </command_interface>
-      <state_interface name="position"/>
+      <state_interface name="position">
+        <param name="initial_value">-1.5</param>
+      </state_interface>
       <state_interface name="velocity"/>
     </joint>
 
@@ -326,8 +331,10 @@
         <param name="min">0.0</param>
         <param name="max">0.06</param>
       </command_interface>
-      
-      <state_interface name="position"/>
+
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
       <state_interface name="velocity"/>
     </joint>
 
@@ -337,7 +344,9 @@
         <param name="max">0.0</param>
       </command_interface>
 
-      <state_interface name="position"/>
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
       <state_interface name="velocity"/>
     </joint>
 

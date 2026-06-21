@@ -97,7 +97,16 @@ def generate_launch_description():
         output="screen",
     )
 
-    # 8. FSM orquestradora
+    # 8a. Servidor do gripper (Service SetBool; força postura inicial retraída)
+    gripper = Node(
+        package="bb8_control",
+        executable="gripper_server",
+        name="gripper_server",
+        parameters=[{"use_sim_time": True}],
+        output="screen",
+    )
+
+    # 8b. FSM orquestradora
     controle = Node(
         package="bb8_control",
         executable="controle_robo",
@@ -115,6 +124,8 @@ def generate_launch_description():
             TimerAction(period=6.0, actions=[slam]),
             # Nav2 depois do SLAM publicar map->odom
             TimerAction(period=9.0, actions=[nav2]),
+            # Gripper sobe junto com o robô (postura inicial retraída cedo)
+            TimerAction(period=8.0, actions=[gripper]),
             # Explore + visão + FSM por último (FSM espera o action server do Nav2)
             TimerAction(period=13.0, actions=[explore, visao, controle]),
         ]

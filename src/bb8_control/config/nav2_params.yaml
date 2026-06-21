@@ -113,7 +113,7 @@ controller_server:
       short_circuit_trajectory_evaluation: true
       stateful: true
       critics: [RotateToGoal, Oscillation, BaseObstacle, GoalAlign, PathAlign, PathDist, GoalDist]
-      BaseObstacle.scale: 0.02
+      BaseObstacle.scale: 0.1   # era 0.02 — peso baixo demais; robô ignorava obstáculos
       PathAlign.scale: 32.0
       PathAlign.forward_point_distance: 0.1
       GoalAlign.scale: 24.0
@@ -136,7 +136,8 @@ local_costmap:
       width: 4
       height: 4
       resolution: 0.05
-      robot_radius: 0.30
+      # footprint poligonal real (base 0.42 x 0.31 m) em vez de raio circular
+      footprint: "[[0.23, 0.17], [0.23, -0.17], [-0.23, -0.17], [-0.23, 0.17]]"
       plugins: [obstacle_layer, inflation_layer]
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
@@ -154,8 +155,8 @@ local_costmap:
           obstacle_min_range: 0.0
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.45
+        cost_scaling_factor: 2.0   # era 3.0 — decaimento mais suave evita raspar quinas
+        inflation_radius: 0.55     # era 0.45
       always_send_full_costmap: true
 
 global_costmap:
@@ -166,7 +167,7 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      robot_radius: 0.30
+      footprint: "[[0.23, 0.17], [0.23, -0.17], [-0.23, -0.17], [-0.23, 0.17]]"
       resolution: 0.05
       track_unknown_space: true
       plugins: [static_layer, obstacle_layer, inflation_layer]
@@ -190,8 +191,8 @@ global_costmap:
           obstacle_min_range: 0.0
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.45
+        cost_scaling_factor: 2.0   # era 3.0 — decaimento mais suave evita raspar quinas
+        inflation_radius: 0.55     # era 0.45
       always_send_full_costmap: true
 
 planner_server:

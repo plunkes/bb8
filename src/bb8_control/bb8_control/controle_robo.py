@@ -9,11 +9,12 @@ Fluxo:
                    (explore/resume=False, que cancela o goal atual no Nav2),
                    calcula a pose à frente da flag (bearing da câmera + range do
                    LIDAR), transforma para o frame 'map' e envia um NavigateToPose.
-  POSICIONANDO_FINAL -> chegou: para, estende o braço e conclui a missão.
+  POSICIONANDO_FINAL -> chegou: chama o Service /gripper/grab (estende+fecha).
+  RETORNANDO_ORIGEM -> navega de volta à pose inicial (gravada na inicialização).
 
 O Nav2 é dono do /cmd_vel (repassado ao diff_drive pelo relay_cmd_vel). Esta FSM
-não publica velocidade — só braço (/gripper_controller/commands) e o sinal de
-controle do explore.
+não publica velocidade nem comanda o braço por tópico — o gripper é acionado via
+Service (/gripper/grab, gripper_server). Só emite o sinal de controle do explore.
 """
 
 import math
@@ -31,7 +32,8 @@ from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import Pose2D, PoseStamped
 from nav2_msgs.action import NavigateToPose
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Bool, Float32, Float64MultiArray
+from std_msgs.msg import Bool, Float32
+from std_srvs.srv import SetBool
 from tf2_ros import Buffer, TransformListener
 
 
@@ -40,12 +42,11 @@ class Estado(Enum):
     EXPLORANDO = auto()
     NAVEGANDO_PARA_BANDEIRA = auto()
     POSICIONANDO_FINAL = auto()
+    RETORNANDO_ORIGEM = auto()
 
 
-# Ordem das juntas em /gripper_controller/commands:
-#   [gripper_extension, arm_elbow, right_gripper_joint, left_gripper_joint]
-ARM_RETRAIDO = [-1.5, -1.5, 0.0, 0.0]  # recolhido contra o corpo durante a navegação
-ARM_ESTENDIDO = [0.0, 0.0, 0.0, 0.0]  # totalmente à frente ao concluir
+# Braço/gripper agora é acionado via Service (/gripper/grab, SetBool) no nó
+# gripper_server — esta FSM não publica mais em /gripper_controller/commands.
 
 # Detecção / aproximação da bandeira
 FLAG_DETEC_MIN_TICKS = 3  # ticks consecutivos de detecção antes de comutar p/ navegação
@@ -76,11 +77,11 @@ class ControleRobo(Node):
         self.create_subscription(Float32, "/vision/flag_bearing", self._cb_bearing, 10)
 
         # --- Saídas ---
-        self._pub_braco = self.create_publisher(
-            Float64MultiArray, "/gripper_controller/commands", 10
-        )
         # Controle do explore_lite: True retoma, False pausa (e cancela goal no Nav2).
         self._pub_explore = self.create_publisher(Bool, "explore/resume", 10)
+
+        # Service do gripper (Task 4): True = estende+fecha, False = retrai+abre.
+        self._gripper_cli = self.create_client(SetBool, "/gripper/grab")
 
         # --- TF: usado para transformar a pose da bandeira base_link -> map ---
         self._tf_buffer = Buffer()
@@ -97,14 +98,13 @@ class ControleRobo(Node):
         self._flag_detec_ticks = 0  # ticks consecutivos COM detecção
         self._flag_perda_ticks = 0  # ticks consecutivos SEM detecção
         self._missao_completa = False
-        self._braco_estado = None  # último comando de braço enviado (evita republicar)
+        self._pose_origem = None  # PoseStamped em 'map', gravada ao iniciar
 
         # Acompanhamento do goal do Nav2
         self._goal_handle = None
         self._nav_status = None  # None | 'pendente' | 'sucesso' | 'falha'
         self._nav_retries = 0
 
-        self._timer_init = self.create_timer(3, self._retrair_braco_inicial)
         self.create_timer(1.0 / FREQ_CONTROLE, self._loop)
 
         self.get_logger().info("[FSM] Estado inicial: INICIALIZANDO (aguardando Nav2)")
@@ -121,10 +121,6 @@ class ControleRobo(Node):
 
     def _cb_bearing(self, msg):
         self._flag_bearing = msg.data
-
-    def _retrair_braco_inicial(self):
-        self._cmd_braco(ARM_RETRAIDO)
-        self._timer_init.cancel()
 
     # ------------------------------------------------------------------ #
     # Laço principal
@@ -150,6 +146,8 @@ class ControleRobo(Node):
             self._exec_navegando()
         elif e == Estado.POSICIONANDO_FINAL:
             self._exec_posicionando()
+        elif e == Estado.RETORNANDO_ORIGEM:
+            self._exec_retornando()
 
     def _set_estado(self, novo):
         anterior = self._estado
@@ -168,25 +166,38 @@ class ControleRobo(Node):
             self._enviar_goal_bandeira()
         elif estado == Estado.POSICIONANDO_FINAL:
             self._set_explore(False)
-            self._concluir_missao()
+            self._pegar_flag()  # (d) estende+fecha o gripper via Service
+        elif estado == Estado.RETORNANDO_ORIGEM:
+            self._set_explore(False)
+            self._nav_retries = 0
+            self._nav_status = None
+            self._goal_handle = None
+            self._enviar_goal_origem()  # (e) volta à pose inicial
 
     # ------------------------------------------------------------------ #
     # Estados
     # ------------------------------------------------------------------ #
     def _exec_inicializando(self):
-        # Espera o Nav2 expor o action server antes de começar a explorar.
-        if self._nav_client.server_is_ready():
-            self.get_logger().info("[FSM] Nav2 pronto.")
-            self._set_estado(Estado.EXPLORANDO)
-        else:
+        # Espera o Nav2 expor o action server e grava a origem antes de explorar.
+        if not self._nav_client.server_is_ready():
             self.get_logger().info(
                 "[FSM] Aguardando action server navigate_to_pose...",
                 throttle_duration_sec=3.0,
             )
+            return
+        if self._pose_origem is None:
+            self._pose_origem = self._pose_atual_em_map()
+            if self._pose_origem is None:
+                self.get_logger().info(
+                    "[FSM] Aguardando TF map->base_link p/ gravar origem...",
+                    throttle_duration_sec=2.0,
+                )
+                return
+        self.get_logger().info("[FSM] Nav2 pronto e origem gravada.")
+        self._set_estado(Estado.EXPLORANDO)
 
     def _exec_explorando(self):
         # O explore_lite cuida da navegação; só vigiamos a bandeira.
-        self._cmd_braco(ARM_RETRAIDO)
         if self._flag_detec_ticks >= FLAG_DETEC_MIN_TICKS:
             self._set_estado(Estado.NAVEGANDO_PARA_BANDEIRA)
 
@@ -218,8 +229,23 @@ class ControleRobo(Node):
             self._set_estado(Estado.EXPLORANDO)
 
     def _exec_posicionando(self):
-        # A missão já foi concluída em _ao_entrar; nada a fazer.
+        # _pegar_flag (em _ao_entrar) já comutou para RETORNANDO_ORIGEM.
         pass
+
+    def _exec_retornando(self):
+        if self._nav_status == "sucesso":
+            self._concluir_missao()
+        elif self._nav_status == "falha":
+            self._nav_status = None
+            if self._nav_retries < NAV_RETRY_MAX:
+                self._nav_retries += 1
+                self.get_logger().warn(
+                    f"[FSM] Retorno falhou — retry {self._nav_retries}/{NAV_RETRY_MAX}"
+                )
+                self._enviar_goal_origem()
+            else:
+                self.get_logger().error("[FSM] Não foi possível retornar à origem.")
+                self._missao_completa = True
 
     # ------------------------------------------------------------------ #
     # Cálculo e envio do goal da bandeira
@@ -248,6 +274,41 @@ class ControleRobo(Node):
         )
         send_future = self._nav_client.send_goal_async(goal)
         send_future.add_done_callback(self._on_goal_response)
+
+    def _enviar_goal_origem(self):
+        """(e) Manda o robô de volta à pose inicial gravada (frame 'map')."""
+        if self._pose_origem is None or not self._nav_client.server_is_ready():
+            self.get_logger().error("[FSM] Sem origem/Nav2 para retornar.")
+            self._nav_status = "falha"
+            return
+        self._pose_origem.header.stamp = self.get_clock().now().to_msg()
+        goal = NavigateToPose.Goal()
+        goal.pose = self._pose_origem
+        self._nav_status = "pendente"
+        self.get_logger().info(
+            f"[FSM] Retornando à origem: "
+            f"({self._pose_origem.pose.position.x:.2f}, "
+            f"{self._pose_origem.pose.position.y:.2f}) [map]"
+        )
+        send_future = self._nav_client.send_goal_async(goal)
+        send_future.add_done_callback(self._on_goal_response)
+
+    def _pose_atual_em_map(self):
+        """Pose atual do base_link no frame 'map' (None se TF indisponível)."""
+        try:
+            t = self._tf_buffer.lookup_transform(
+                "map", "base_link", Time(), timeout=Duration(seconds=0.3)
+            )
+        except Exception:
+            return None
+        pose = PoseStamped()
+        pose.header.frame_id = "map"
+        pose.header.stamp = self.get_clock().now().to_msg()
+        pose.pose.position.x = t.transform.translation.x
+        pose.pose.position.y = t.transform.translation.y
+        pose.pose.position.z = 0.0
+        pose.pose.orientation = t.transform.rotation
+        return pose
 
     def _calcular_pose_bandeira(self):
         """Funde bearing (câmera) + range (LIDAR) -> PoseStamped à frente da flag em 'map'."""
@@ -344,15 +405,26 @@ class ControleRobo(Node):
     # ------------------------------------------------------------------ #
     # Conclusão da missão
     # ------------------------------------------------------------------ #
+    def _pegar_flag(self):
+        """(d) Estende o braço e fecha a garra via Service SetBool(True)."""
+        if not self._gripper_cli.wait_for_service(timeout_sec=2.0):
+            self.get_logger().error("[FSM] Service /gripper/grab indisponível.")
+        else:
+            req = SetBool.Request()
+            req.data = True
+            self._gripper_cli.call_async(req)
+            self.get_logger().info("[FSM] Flag agarrada — gripper estendido e fechado.")
+        # Pegou a flag: volta à origem.
+        self._set_estado(Estado.RETORNANDO_ORIGEM)
+
     def _concluir_missao(self):
         self._cancelar_goal()
         self._missao_completa = True
-        self._cmd_braco(ARM_ESTENDIDO)
         self.get_logger().info(
             "\n"
             "╔══════════════════════════════════════════╗\n"
             "║            Congratulations!              ║\n"
-            "║    Bandeira alcançada com sucesso!       ║\n"
+            "║  Flag capturada e robô de volta à base!  ║\n"
             "╚══════════════════════════════════════════╝"
         )
 
@@ -361,15 +433,6 @@ class ControleRobo(Node):
     # ------------------------------------------------------------------ #
     def _set_explore(self, ativar):
         self._pub_explore.publish(Bool(data=bool(ativar)))
-
-    def _cmd_braco(self, posicoes):
-        chave = str(posicoes)
-        if self._braco_estado == chave:
-            return
-        msg = Float64MultiArray()
-        msg.data = posicoes
-        self._pub_braco.publish(msg)
-        self._braco_estado = chave
 
 
 def main(args=None):

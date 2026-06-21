@@ -174,15 +174,16 @@ def generate_launch_description():
         executable="parameter_bridge",
         name="ros_gz_bridge_prm_robot",
         arguments=[
-            "/scan@sensor_msgs/msg/LaserScan@ignition.msgs.LaserScan",
-            "/imu@sensor_msgs/msg/Imu@ignition.msgs.IMU",
+            # Sensores são read-only (gz -> ros): usar '[' e não '@' (bidirecional)
+            "/scan@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan",
+            "/imu@sensor_msgs/msg/Imu[ignition.msgs.IMU",
             # Camera normal
             # "/robot_cam@sensor_msgs/msg/Image@ignition.msgs.Image",
             # "/camera_info@sensor_msgs/msg/CameraInfo@ignition.msgs.CameraInfo",
             # Camera de segmentacao semantica
-            "/robot_cam/labels_map@sensor_msgs/msg/Image@ignition.msgs.Image",
-            "/robot_cam/colored_map@sensor_msgs/msg/Image@ignition.msgs.Image",
-            "/robot_cam/camera_info@sensor_msgs/msg/CameraInfo@ignition.msgs.CameraInfo",
+            "/robot_cam/labels_map@sensor_msgs/msg/Image[ignition.msgs.Image",
+            "/robot_cam/colored_map@sensor_msgs/msg/Image[ignition.msgs.Image",
+            "/robot_cam/camera_info@sensor_msgs/msg/CameraInfo[ignition.msgs.CameraInfo",
             # Camera de detectao bounding box
             # "/boxes_visible_2d_image@sensor_msgs/msg/Image@ignition.msgs.Image",
             # "/camera_info@sensor_msgs/msg/CameraInfo@ignition.msgs.CameraInfo",
