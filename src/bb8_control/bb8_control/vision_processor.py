@@ -18,11 +18,17 @@ class VisionProcessorNode(Node):
         self.declare_parameter("flag_label_ids", [25])
         self.declare_parameter("camera_hfov_deg", 90.0)
         self.declare_parameter("min_flag_pixels", 40)
+        # Altura real do blob rotulado (mastro+painel) p/ estimar distância (pinhole).
+        self.declare_parameter("flag_real_height_m", 0.5)
 
         self._flag_labels = set(self.get_parameter("flag_label_ids").value)
         hfov_deg = self.get_parameter("camera_hfov_deg").value
         self._hfov = math.radians(hfov_deg)
         self._min_pixels = self.get_parameter("min_flag_pixels").value
+        self._flag_h = self.get_parameter("flag_real_height_m").value
+        # Distância focal em px (assume pixels quadrados: fy = fx). Preenchida no
+        # 1º frame a partir da largura da imagem e do HFOV.
+        self._focal_px = None
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -36,6 +42,7 @@ class VisionProcessorNode(Node):
             Pose2D, "/vision/flag_detection", 10
         )
         self._pub_bearing = self.create_publisher(Float32, "/vision/flag_bearing", 10)
+        self._pub_distance = self.create_publisher(Float32, "/vision/flag_distance", 10)
         self._pub_scene_class = self.create_publisher(String, "/vision/scene_class", 10)
 
         self._bridge = CvBridge()
@@ -61,36 +68,51 @@ class VisionProcessorNode(Node):
 
         pose_msg = Pose2D()
         bearing_msg = Float32()
+        distance_msg = Float32()
+
+        img_h, img_w = float(img.shape[0]), float(img.shape[1])
+        if self._focal_px is None:
+            # fx = (largura/2) / tan(HFOV/2); pixels quadrados => fy = fx.
+            self._focal_px = (img_w / 2.0) / math.tan(self._hfov / 2.0)
 
         if detected:
             ys, xs = np.where(flag_mask)
             cx = float(np.mean(xs))
             cy = float(np.mean(ys))
-            img_h, img_w = float(img.shape[0]), float(img.shape[1])
             total_px = img_w * img_h
 
             bearing = (img_w / 2.0 - cx) / (img_w / 2.0) * (self._hfov / 2.0)
             fraction_pct = area / total_px * 100.0
 
+            # Distância por pinhole pela ALTURA aparente do blob (imune a obstáculo
+            # que esteja entre o robô e a flag — usa o tamanho, não o range do LIDAR).
+            bbox_h = float(ys.max() - ys.min() + 1)
+            distance = (
+                self._focal_px * self._flag_h / bbox_h if bbox_h > 0 else 0.0
+            )
+
             pose_msg.x = cx
             pose_msg.y = float(area)
             pose_msg.theta = 1.0
             bearing_msg.data = float(bearing)
+            distance_msg.data = float(distance)
 
             self.get_logger().info(
                 f"Flag @ ({cx:.0f}, {cy:.0f})px  bearing={math.degrees(bearing):.1f}°"
-                f"  area={area}px ({fraction_pct:.2f}%)",
+                f"  area={area}px ({fraction_pct:.2f}%)  dist~{distance:.2f}m",
                 throttle_duration_sec=1.0,
             )
             scene_class = "objective"
         else:
             pose_msg.theta = 0.0
             bearing_msg.data = 0.0
+            distance_msg.data = 0.0
             obstacle_detected = bool(np.any((img > 0) & ~flag_mask))
             scene_class = "obstacle" if obstacle_detected else "clear"
 
         self._pub_detection.publish(pose_msg)
         self._pub_bearing.publish(bearing_msg)
+        self._pub_distance.publish(distance_msg)
         self._pub_scene_class.publish(String(data=scene_class))
 
     def _decode_label_image(self, msg: Image):

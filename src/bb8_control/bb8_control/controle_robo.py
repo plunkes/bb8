@@ -57,6 +57,9 @@ SETOR_BANDEIRA = math.radians(
 )  # meia-largura do setor LIDAR amostrado em torno do bearing
 RANGE_FALLBACK = 2.5  # [m] estimativa de distância se o LIDAR não retornar no setor
 NAV_RETRY_MAX = 3  # tentativas de reenvio de goal antes de desistir e re-explorar
+# Se o LIDAR no setor da flag vier mais curto que a estimativa da câmera por mais
+# que isto, há um OBSTÁCULO entre o robô e a flag -> confia na câmera (não no LIDAR).
+OBSTACULO_TOL = 0.5  # [m]
 
 # Critérios para ENTRAR em POSICIONANDO_FINAL (pegar a flag):
 FLAG_AREA_MIN_PX = 1500  # [px] flag ocupa >= isto na imagem => muito perto
@@ -81,6 +84,9 @@ class ControleRobo(Node):
         self.create_subscription(LaserScan, "/scan", self._cb_scan, qos_be)
         self.create_subscription(Pose2D, "/vision/flag_detection", self._cb_visao, 10)
         self.create_subscription(Float32, "/vision/flag_bearing", self._cb_bearing, 10)
+        self.create_subscription(
+            Float32, "/vision/flag_distance", self._cb_distancia, 10
+        )
 
         # --- Saídas ---
         # Controle do explore_lite: True retoma, False pausa (e cancela goal no Nav2).
@@ -102,6 +108,7 @@ class ControleRobo(Node):
         self._bandeira_detectada = False
         self._flag_bearing = 0.0  # [rad] + = bandeira à esquerda
         self._flag_area = 0.0  # [px] área da flag na imagem (do vision_processor)
+        self._flag_distance = 0.0  # [m] distância estimada pela câmera (pinhole)
         self._flag_detec_ticks = 0  # ticks consecutivos COM detecção
         self._flag_perda_ticks = 0  # ticks consecutivos SEM detecção
         self._goal_refresh_ticks = 0  # contador p/ re-mirar o goal de aproximação
@@ -130,6 +137,9 @@ class ControleRobo(Node):
 
     def _cb_bearing(self, msg):
         self._flag_bearing = msg.data
+
+    def _cb_distancia(self, msg):
+        self._flag_distance = msg.data
 
     # ------------------------------------------------------------------ #
     # Laço principal
@@ -261,7 +271,7 @@ class ControleRobo(Node):
             return False
         if self._flag_area < FLAG_AREA_MIN_PX:
             return False
-        rng = self._range_no_setor(self._flag_bearing, SETOR_BANDEIRA)
+        rng = self._estimar_range_flag()
         if rng is None or rng > FLAG_RANGE_MAX:
             return False
         return True
@@ -348,13 +358,32 @@ class ControleRobo(Node):
         pose.pose.orientation = t.transform.rotation
         return pose
 
+    def _estimar_range_flag(self):
+        """Distância robusta até a flag, fundindo câmera (pinhole) + LIDAR.
+
+        - LIDAR é preciso, MAS se houver obstáculo entre robô e flag o raio bate
+          no obstáculo e vem curto. A câmera estima pelo tamanho aparente e ignora
+          o obstáculo.
+        - Regra: se o LIDAR vier mais curto que a estimativa da câmera por mais que
+          OBSTACULO_TOL, há obstáculo no caminho -> usa a câmera. Senão, usa o LIDAR
+          (mais preciso quando a linha de visão está livre).
+        Retorna None se não há nenhuma fonte.
+        """
+        cam = self._flag_distance if self._flag_distance > 0.0 else None
+        lidar = self._range_no_setor(self._flag_bearing, SETOR_BANDEIRA)
+        if cam is not None and lidar is not None:
+            return cam if lidar < cam - OBSTACULO_TOL else lidar
+        if cam is not None:
+            return cam
+        return lidar  # pode ser None
+
     def _calcular_pose_bandeira(self):
-        """Funde bearing (câmera) + range (LIDAR) -> PoseStamped à frente da flag em 'map'."""
+        """Funde bearing (câmera) + range (câmera/LIDAR) -> PoseStamped em 'map'."""
         if self._scan is None:
             return None
 
         bearing = self._flag_bearing
-        rng = self._range_no_setor(bearing, SETOR_BANDEIRA)
+        rng = self._estimar_range_flag()
         if rng is None:
             rng = RANGE_FALLBACK
 
