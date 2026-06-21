@@ -23,9 +23,11 @@ from std_srvs.srv import SetBool
 
 # Ordem das juntas em /gripper_controller/commands (igual ao controller_config.yaml):
 #   [gripper_extension, arm_elbow, right_gripper_joint, left_gripper_joint]
-ARM_RETRAIDO = [-1.5, -1.5, 0.0, 0.0]            # recolhido + garra aberta (navegação)
-ARM_ESTENDIDO_ABERTO = [0.0, 0.0, 0.0, 0.0]      # estendido à frente, garra ABERTA
-ARM_ESTENDIDO_FECHADO = [0.0, 0.0, -0.06, 0.06]  # estendido, garra FECHADA (pega flag)
+# Dedos: [right_gripper_joint, left_gripper_joint]. 0,0 = FECHADO (gap 0.02);
+#        -0.06,0.06 = ABERTO (gap 0.14). (ver limites das juntas no URDF)
+ARM_RETRAIDO = [-1.5, -1.5, 0.0, 0.0]            # recolhido + garra FECHADA (início)
+ARM_ESTENDIDO_ABERTO = [0.0, 0.0, -0.06, 0.06]   # estendido à frente, garra ABERTA
+ARM_ESTENDIDO_FECHADO = [0.0, 0.0, 0.0, 0.0]     # estendido, garra FECHADA (pega flag)
 
 
 class GripperServer(Node):

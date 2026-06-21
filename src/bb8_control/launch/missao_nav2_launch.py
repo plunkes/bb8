@@ -22,6 +22,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from nav2_common.launch import RewrittenYaml
 
 
 def generate_launch_description():
@@ -30,8 +31,18 @@ def generate_launch_description():
     pkg_nav2 = FindPackageShare("nav2_bringup")
 
     slam_params = PathJoinSubstitution([pkg_ctrl, "config", "slam_toolbox.yaml"])
-    nav2_params = PathJoinSubstitution([pkg_ctrl, "config", "nav2_params.yaml"])
+    nav2_params_src = PathJoinSubstitution([pkg_ctrl, "config", "nav2_params.yaml"])
     explore_params = PathJoinSubstitution([pkg_ctrl, "config", "explore_params.yaml"])
+
+    # Injeta o caminho absoluto da BT customizada (sem ré) no nav2_params em runtime.
+    bt_no_backup = PathJoinSubstitution(
+        [pkg_ctrl, "behavior_trees", "navigate_no_backup.xml"]
+    )
+    nav2_params = RewrittenYaml(
+        source_file=nav2_params_src,
+        param_rewrites={"default_nav_to_pose_bt_xml": bt_no_backup},
+        convert_types=True,
+    )
 
     # 1. Gazebo com o mundo da arena
     simulacao = IncludeLaunchDescription(

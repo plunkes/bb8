@@ -17,7 +17,7 @@ class VisionProcessorNode(Node):
 
         self.declare_parameter("flag_label_ids", [25])
         self.declare_parameter("camera_hfov_deg", 90.0)
-        self.declare_parameter("min_flag_pixels", 40)
+        self.declare_parameter("min_flag_pixels", 15)
         # Altura real do blob rotulado (mastro+painel) p/ estimar distância (pinhole).
         self.declare_parameter("flag_real_height_m", 0.5)
 

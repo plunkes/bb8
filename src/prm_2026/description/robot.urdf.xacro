@@ -12,7 +12,7 @@
   <xacro:property name="wheel_width" value="0.04"/> <!-- Largura da roda -->
   <xacro:property name="wheel_ygap" value="0.025"/> <!-- Distancia entre as rodas -->
   <xacro:property name="wheel_zoff" value="0.05"/> <!-- Deslocamento da roda em Z -->
-  <xacro:property name="wheel_xoff" value="0.12"/> <!-- Deslocamento da roda em X -->
+  <xacro:property name="wheel_xoff" value="0.0"/> <!-- Rodas no eixo do centro: gira no lugar sem varrer o corpo -->
 
   <xacro:property name="caster_xoff" value="0.14"/> <!-- Deslocamento do caster em X -->
 
@@ -161,6 +161,40 @@
 
   <!-- Very low friction on caster so it rotates freely -->
   <gazebo reference="front_caster">
+    <mu1>0.01</mu1>
+    <mu2>0.01</mu2>
+    <kp>100000.0</kp>
+    <kd>1.0</kd>
+  </gazebo>
+
+  <!-- Caster traseiro: com as rodas no centro, dá apoio fore/aft (não tomba). -->
+  <link name="rear_caster">
+    <visual>
+      <geometry>
+        <sphere radius="${(wheel_radius+wheel_zoff-(base_height/2))}"/>
+      </geometry>
+      <material name="DarkBlue">
+        <color rgba="0.09 0.30 0.46 1.0"/>
+      </material>
+    </visual>
+
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="${(wheel_radius+wheel_zoff-(base_height/2))}"/>
+      </geometry>
+    </collision>
+
+    <xacro:sphere_inertia m="0.005" r="${(wheel_radius+wheel_zoff-(base_height/2))}"/>
+  </link>
+
+  <joint name="rear_caster_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="rear_caster"/>
+    <origin xyz="${-caster_xoff} 0.0 ${-(base_height/2)}" rpy="0 0 0"/>
+  </joint>
+
+  <gazebo reference="rear_caster">
     <mu1>0.01</mu1>
     <mu2>0.01</mu2>
     <kp>100000.0</kp>

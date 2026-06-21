@@ -19,7 +19,7 @@ explore_node:
     visualize: true
 
     planner_frequency:
-      0.33 # [Hz] re-planeja fronteiras a cada ~5 s
+      0.5 # [Hz] re-planeja fronteiras a cada ~2 s
       # (mais baixo = mais compromisso com o goal atual,
       #  menos troca de fronteira / vai-e-volta)
     progress_timeout: 30.0 # [s] abandona um goal travado
@@ -30,11 +30,14 @@ explore_node:
     # potential_scale menor + gain_scale maior = vai atrás de GRANDES áreas novas
     #   (mesmo um pouco mais longe) em vez de slivers perto de área já conhecida.
     # orientation_scale > 0 = prefere fronteiras À FRENTE (evita giro de 180°).
-    potential_scale: 2.5
-    orientation_scale: 0.6
-    gain_scale: 2.0
+    potential_scale: 2.0
+    # AGORA ATIVO (frontier_search.cpp): penaliza fronteiras ATRÁS do robô.
+    # custo += orientation_scale * |Δheading|  (0 à frente, ~π atrás).
+    # Alto => robô fortemente prefere explorar p/ frente (evita ré/giro 180°).
+    orientation_scale: 1.5
+    gain_scale: 3.0
 
     transform_tolerance: 0.3
     min_frontier_size:
-      1.0 # [m] ignora fronteiras pequenas (slivers) → não
+      0.8 # [m] ignora fronteiras pequenas (slivers) → não
       #     volta pra pintar pedacinhos de área conhecida

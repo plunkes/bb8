@@ -65,15 +65,23 @@ NAV_RETRY_MAX = 3  # tentativas de reenvio de goal antes de desistir e re-explor
 OBSTACULO_TOL = 0.5  # [m]
 
 # Critérios para ENTRAR em POSICIONANDO_FINAL (pegar a flag):
-FLAG_AREA_MIN_PX = 1500  # [px] flag ocupa >= isto na imagem => muito perto
-FLAG_ALIGN_MAX = math.radians(10.0)  # [rad] |bearing| máximo => alinhado com a flag
+FLAG_AREA_MIN_PX = 900  # [px] flag ocupa >= isto na imagem => muito perto
+FLAG_ALIGN_MAX = math.radians(6.0)  # [rad] |bearing| máximo => alinhado com a flag
 FLAG_RANGE_MAX = 1.0  # [m] range do LIDAR até a flag p/ validar proximidade
 GOAL_REFRESH_TICKS = 10  # re-mira o goal de aproximação a cada ~1 s (rastreia a flag)
+
+# Servo visual (aproximação final): assume o controle quando a flag está perto,
+# mantendo-a no centro da câmera. Evita o Nav2 girar/colapsar o goal de perto.
+VS_DIST = 1.0  # [m] abaixo disto, controle visual simples em vez de goals do Nav2
+VS_KP = 1.5  # ganho de giro [rad/s por rad de bearing]
+VS_MAX_W = 1.2  # [rad/s] giro máximo no servo
+VS_VEL = 0.25  # [m/s] avanço quando a flag está centrada
+VS_ALIGN = math.radians(12.0)  # |bearing| p/ considerar centrada e poder avançar
 
 # Sequência de captura em POSICIONANDO_FINAL (ticks @ FREQ_CONTROLE=10Hz):
 GRIPPER_EXTEND_TICKS = 15  # ~1.5 s p/ o braço estender antes de avançar
 GRIPPER_CLOSE_TICKS = 15  # ~1.5 s p/ a garra fechar na flag antes de retornar
-GRAB_DIST = 0.30  # [m] para de avançar quando a flag está ao alcance do braço
+GRAB_DIST = 0.22  # [m] para de avançar quando a flag está ao alcance do braço
 CREEP_VEL = 0.12  # [m/s] avanço lento e final até encostar na flag
 CREEP_MAX_TICKS = 30  # ticks ~3 s máx de avanço final (segurança)
 
@@ -147,6 +155,7 @@ class ControleRobo(Node):
         self._flag_detec_ticks = 0  # ticks consecutivos COM detecção
         self._flag_perda_ticks = 0  # ticks consecutivos SEM detecção
         self._goal_refresh_ticks = 0  # contador p/ re-mirar o goal de aproximação
+        self._servo_ativo = False  # latch: controle visual assumiu (Nav2 desligado)
 
         # Detecção de "encravado" + avanço à procura de parede
         self._stuck_ref = None  # PoseStamped de referência p/ medir deslocamento
@@ -232,6 +241,7 @@ class ControleRobo(Node):
             self._nav_status = None
             self._goal_handle = None
             self._goal_refresh_ticks = 0
+            self._servo_ativo = False  # começa sob controle do Nav2
             self._enviar_goal_bandeira()
         elif estado == Estado.POSICIONANDO_FINAL:
             self._set_explore(False)
@@ -342,6 +352,21 @@ class ControleRobo(Node):
             self._set_estado(Estado.EXPLORANDO)
             return
 
+        # 2b) Perto (<VS_DIST): assume o CONTROLE VISUAL SIMPLES e o mantém travado
+        #     (latch). O Nav2 manda paths confusos de perto; uma vez que o servo
+        #     assume, não devolvemos o controle ao Nav2 (só sai daqui se pegar a
+        #     flag ou perdê-la de vista por tempo demais, tratado acima).
+        rng = self._estimar_range_flag()
+        if self._servo_ativo or (rng is not None and rng <= VS_DIST):
+            if not self._servo_ativo:
+                self._servo_ativo = True
+                self.get_logger().info(
+                    "[FSM] Flag perto (<1m) — controle visual simples, Nav2 desligado."
+                )
+            self._cancelar_goal()
+            self._servo_visual()
+            return
+
         # 3) Goal de aproximação falhou -> retry; se esgotar, re-explora.
         if self._nav_status == "falha":
             self._nav_status = None
@@ -368,17 +393,34 @@ class ControleRobo(Node):
                 self._enviar_goal_bandeira()
 
     def _pronto_para_pegar(self):
-        """True se a flag está alinhada, grande na imagem e perto pelo LIDAR."""
+        """True se a flag está centrada na câmera e perto o suficiente p/ pegar."""
         if not self._bandeira_detectada:
             return False
-        if abs(self._flag_bearing) > FLAG_ALIGN_MAX:
-            return False
-        if self._flag_area < FLAG_AREA_MIN_PX:
+        if abs(self._flag_bearing) > FLAG_ALIGN_MAX:  # precisa estar centrada
             return False
         rng = self._estimar_range_flag()
-        if rng is None or rng > FLAG_RANGE_MAX:
+        if rng is None:
             return False
-        return True
+        # Perto e grande na imagem, OU muito perto (área pode falhar de tão perto).
+        perto = rng <= FLAG_RANGE_MAX and self._flag_area >= FLAG_AREA_MIN_PX
+        muito_perto = rng <= 0.6
+        return perto or muito_perto
+
+    def _servo_visual(self):
+        """Aproximação final: gira p/ centrar a flag (bearing->0) e avança quando
+        centrada. Publica /cmd_vel direto (Nav2 sem goal nesta fase)."""
+        if not self._bandeira_detectada:
+            # Sumiu neste frame: para (não gira perdido). Perda longa -> re-explora
+            # é tratada no início de _exec_navegando.
+            self._parar()
+            return
+        bearing = self._flag_bearing  # >0 = flag à esquerda -> girar à esquerda (+z)
+        cmd = Twist()
+        w = VS_KP * bearing
+        cmd.angular.z = max(-VS_MAX_W, min(VS_MAX_W, w))
+        # Só avança quando a flag está centrada; senão gira no lugar p/ centrar.
+        cmd.linear.x = VS_VEL if abs(bearing) < VS_ALIGN else 0.0
+        self._pub_cmd.publish(cmd)
 
     def _exec_posicionando(self):
         # Captura em 3 fases: (0) estende o braço, (1) avança até encostar na flag,

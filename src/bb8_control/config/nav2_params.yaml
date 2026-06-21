@@ -14,6 +14,9 @@ bt_navigator:
     odom_topic: /odom_gt
     bt_loop_duration: 10
     default_server_timeout: 20
+    # BT customizada SEM o recovery BackUp (sem ré). O caminho absoluto é
+    # injetado em runtime pelo launch (RewrittenYaml) — este valor é placeholder.
+    default_nav_to_pose_bt_xml: "OVERRIDDEN_AT_LAUNCH"
     # Lista padrão de nós de Behavior Tree do Nav2 Humble
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node
@@ -87,12 +90,12 @@ controller_server:
     FollowPath:
       plugin: dwb_core::DWBLocalPlanner
       debug_trajectory_details: true
-      min_vel_x: -0.25  # ré LENTA e curta só p/ manobrar (não cruza/explora de ré)
+      min_vel_x: 0.0    # SEM ré: pra mudar de direção, gira no lugar (rodas centradas)
       min_vel_y: 0.0
       max_vel_x: 1.0    # menos corte de curva a alta velocidade (raspava obstáculo)
       max_vel_y: 0.0
-      max_vel_theta: 2.0   # giro mais rápido p/ virar 180° com facilidade
-      min_speed_xy: -0.25
+      max_vel_theta: 2.5   # giro mais rápido p/ virar 180° com facilidade
+      min_speed_xy: 0.0
       max_speed_xy: 1.0
       min_speed_theta: 0.0
       acc_lim_x: 3.0      # acel/decel maiores p/ parar a tempo a 1.2 m/s
@@ -160,7 +163,7 @@ local_costmap:
         # padding maior p/ não raspar; decaimento moderado ainda deixa lane entre
         # cilindros pro robô passar/girar.
         cost_scaling_factor: 3.0
-        inflation_radius: 0.60
+        inflation_radius: 0.45
       always_send_full_costmap: true
 
 global_costmap:
@@ -199,7 +202,7 @@ global_costmap:
         # padding maior p/ não raspar; decaimento moderado ainda deixa lane entre
         # cilindros pro robô passar/girar.
         cost_scaling_factor: 3.0
-        inflation_radius: 0.60
+        inflation_radius: 0.45
       always_send_full_costmap: true
 
 planner_server:
@@ -229,6 +232,10 @@ behavior_server:
     costmap_topic: local_costmap/costmap_raw
     footprint_topic: local_costmap/published_footprint
     cycle_frequency: 10.0
+    # 'backup' precisa existir como SERVER senão a BT default navigate_through_poses
+    # (que referencia BackUp) falha ao carregar e o bt_navigator não ativa.
+    # A ré é evitada na prática: o robô só roda navigate_to_pose, cuja BT custom
+    # (navigate_no_backup.xml) NÃO chama BackUp. nav_through_poses nunca é executada.
     behavior_plugins: [spin, backup, drive_on_heading, assisted_teleop, wait]
     spin:
       plugin: nav2_behaviors/Spin
@@ -245,7 +252,7 @@ behavior_server:
     robot_base_frame: base_link
     transform_tolerance: 0.1
     simulate_ahead_time: 2.0
-    max_rotational_vel: 1.5
+    max_rotational_vel: 2.0
     min_rotational_vel: 0.4
     rotational_acc_lim: 2.5
 
@@ -255,8 +262,8 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: OPEN_LOOP
-    max_velocity: [1.0, 0.0, 2.0]
-    min_velocity: [-0.25, 0.0, -2.0]   # ré lenta p/ manobra; giro livre nos 2 sentidos
+    max_velocity: [1.0, 0.0, 2.5]
+    min_velocity: [0.0, 0.0, -2.5]   # sem ré; giro livre nos 2 sentidos
     max_accel: [3.0, 0.0, 4.0]
     max_decel: [-3.0, 0.0, -4.0]
     odom_topic: /odom_gt
