@@ -87,20 +87,20 @@ controller_server:
     FollowPath:
       plugin: dwb_core::DWBLocalPlanner
       debug_trajectory_details: true
-      min_vel_x: -1.2   # ré com a mesma velocidade da frente
+      min_vel_x: 0.0    # SEM ré: a câmera só vê pra frente; prefere girar 180°
       min_vel_y: 0.0
       max_vel_x: 1.2
       max_vel_y: 0.0
-      max_vel_theta: 1.8
-      min_speed_xy: -1.2
+      max_vel_theta: 2.0   # giro mais rápido p/ virar 180° com facilidade
+      min_speed_xy: 0.0
       max_speed_xy: 1.2
       min_speed_theta: 0.0
       acc_lim_x: 3.0      # acel/decel maiores p/ parar a tempo a 1.2 m/s
       acc_lim_y: 0.0
-      acc_lim_theta: 3.2
+      acc_lim_theta: 4.0   # acel angular alta = entra/sai do giro rápido
       decel_lim_x: -3.0
       decel_lim_y: 0.0
-      decel_lim_theta: -3.2
+      decel_lim_theta: -4.0
       vx_samples: 20
       vy_samples: 0
       vtheta_samples: 40   # amostragem angular mais fina p/ girar em corredor estreito
@@ -155,10 +155,10 @@ local_costmap:
           obstacle_min_range: 0.0
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        # decaimento íngreme + raio menor deixa um corredor de custo baixo entre
-        # cilindros, dando espaço pro robô girar/manobrar em vez de ficar preso.
-        cost_scaling_factor: 3.5
-        inflation_radius: 0.40
+        # padding maior p/ não raspar; decaimento moderado ainda deixa lane entre
+        # cilindros pro robô passar/girar.
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.48
       always_send_full_costmap: true
 
 global_costmap:
@@ -193,10 +193,10 @@ global_costmap:
           obstacle_min_range: 0.0
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        # decaimento íngreme + raio menor deixa um corredor de custo baixo entre
-        # cilindros, dando espaço pro robô girar/manobrar em vez de ficar preso.
-        cost_scaling_factor: 3.5
-        inflation_radius: 0.40
+        # padding maior p/ não raspar; decaimento moderado ainda deixa lane entre
+        # cilindros pro robô passar/girar.
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.48
       always_send_full_costmap: true
 
 planner_server:
@@ -252,10 +252,10 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: OPEN_LOOP
-    max_velocity: [1.2, 0.0, 1.8]
-    min_velocity: [-1.2, 0.0, -1.8]
-    max_accel: [3.0, 0.0, 3.2]
-    max_decel: [-3.0, 0.0, -3.2]
+    max_velocity: [1.2, 0.0, 2.0]
+    min_velocity: [0.0, 0.0, -2.0]   # sem ré (x mín 0); giro livre nos dois sentidos
+    max_accel: [3.0, 0.0, 4.0]
+    max_decel: [-3.0, 0.0, -4.0]
     odom_topic: /odom_gt
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]

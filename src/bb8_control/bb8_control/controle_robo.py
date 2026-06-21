@@ -29,7 +29,7 @@ from rclpy.time import Time
 
 import tf2_geometry_msgs  # noqa: F401 — registra PoseStamped no tf2 (efeito colateral)
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import Pose2D, PoseStamped
+from geometry_msgs.msg import Pose2D, PoseStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool, Float32
@@ -43,6 +43,7 @@ class Estado(Enum):
     NAVEGANDO_PARA_BANDEIRA = auto()
     POSICIONANDO_FINAL = auto()
     RETORNANDO_ORIGEM = auto()
+    BUSCANDO_PAREDE = auto()  # robô encravado em área aberta: avança p/ achar parede
 
 
 # Braço/gripper agora é acionado via Service (/gripper/grab, SetBool) no nó
@@ -66,6 +67,16 @@ FLAG_AREA_MIN_PX = 1500  # [px] flag ocupa >= isto na imagem => muito perto
 FLAG_ALIGN_MAX = math.radians(10.0)  # [rad] |bearing| máximo => alinhado com a flag
 FLAG_RANGE_MAX = 1.0  # [m] range do LIDAR até a flag p/ validar proximidade
 GOAL_REFRESH_TICKS = 10  # re-mira o goal de aproximação a cada ~1 s (rastreia a flag)
+
+# "Encravado" em área aberta: explore manda goals pro lugar onde o robô já está
+# (LIDAR sem retorno -> sem fronteira). Detecta pouca movimentação e avança a esmo.
+STUCK_MIN_MOVE = 0.15  # [m] deslocamento mínimo p/ considerar que está se movendo
+STUCK_MAX_TICKS = 50  # ticks ~5 s quase parado em EXPLORANDO antes de avançar
+AVANCO_MAX_TICKS = 40  # ticks ~4 s indo p/ frente antes de voltar a explorar
+AVANCO_VEL = 0.4  # [m/s] velocidade ao avançar à procura de parede
+AVANCO_FRONT_SECTOR = math.radians(25.0)  # meia-largura do setor frontal vigiado
+AVANCO_SAFE_DIST = 0.7  # [m] obstáculo mais perto que isto à frente -> não avança
+AVANCO_GIRO = 0.6  # [rad/s] giro à esquerda quando há obstáculo à frente
 
 FREQ_CONTROLE = 10  # [Hz] taxa do laço principal da FSM
 
@@ -91,6 +102,8 @@ class ControleRobo(Node):
         # --- Saídas ---
         # Controle do explore_lite: True retoma, False pausa (e cancela goal no Nav2).
         self._pub_explore = self.create_publisher(Bool, "explore/resume", 10)
+        # Velocidade direta (só usada no estado BUSCANDO_PAREDE; Nav2 não tem goal lá).
+        self._pub_cmd = self.create_publisher(Twist, "/cmd_vel", 10)
 
         # Service do gripper (Task 4): True = estende+fecha, False = retrai+abre.
         self._gripper_cli = self.create_client(SetBool, "/gripper/grab")
@@ -112,6 +125,11 @@ class ControleRobo(Node):
         self._flag_detec_ticks = 0  # ticks consecutivos COM detecção
         self._flag_perda_ticks = 0  # ticks consecutivos SEM detecção
         self._goal_refresh_ticks = 0  # contador p/ re-mirar o goal de aproximação
+
+        # Detecção de "encravado" + avanço à procura de parede
+        self._stuck_ref = None  # PoseStamped de referência p/ medir deslocamento
+        self._stuck_ticks = 0  # ticks quase parado em EXPLORANDO
+        self._avanco_ticks = 0  # ticks indo p/ frente em BUSCANDO_PAREDE
         self._missao_completa = False
         self._pose_origem = None  # PoseStamped em 'map', gravada ao iniciar
 
@@ -167,6 +185,8 @@ class ControleRobo(Node):
             self._exec_posicionando()
         elif e == Estado.RETORNANDO_ORIGEM:
             self._exec_retornando()
+        elif e == Estado.BUSCANDO_PAREDE:
+            self._exec_buscando_parede()
 
     def _set_estado(self, novo):
         anterior = self._estado
@@ -177,6 +197,11 @@ class ControleRobo(Node):
     def _ao_entrar(self, estado):
         if estado == Estado.EXPLORANDO:
             self._set_explore(True)  # libera o m-explore
+            self._stuck_ref = None  # reinicia detecção de encravamento
+            self._stuck_ticks = 0
+        elif estado == Estado.BUSCANDO_PAREDE:
+            self._set_explore(False)  # pausa o m-explore (libera o /cmd_vel)
+            self._avanco_ticks = 0
         elif estado == Estado.NAVEGANDO_PARA_BANDEIRA:
             self._set_explore(False)  # pausa o m-explore (cancela goal no Nav2)
             self._nav_retries = 0
@@ -217,9 +242,61 @@ class ControleRobo(Node):
         self._set_estado(Estado.EXPLORANDO)
 
     def _exec_explorando(self):
-        # O explore_lite cuida da navegação; só vigiamos a bandeira.
+        # O explore_lite cuida da navegação; vigiamos a bandeira...
         if self._flag_detec_ticks >= FLAG_DETEC_MIN_TICKS:
             self._set_estado(Estado.NAVEGANDO_PARA_BANDEIRA)
+            return
+        # ...e se o robô encravou (parado recebendo goals pro próprio lugar).
+        if self._detectar_encravado():
+            self.get_logger().warn(
+                "[FSM] Encravado em área aberta — avançando p/ achar parede."
+            )
+            self._set_estado(Estado.BUSCANDO_PAREDE)
+
+    def _detectar_encravado(self):
+        """True se o robô mal se moveu por STUCK_MAX_TICKS ticks em EXPLORANDO."""
+        pos = self._pose_atual_em_map()
+        if pos is None:
+            return False
+        if self._stuck_ref is None:
+            self._stuck_ref = pos
+            self._stuck_ticks = 0
+            return False
+        dx = pos.pose.position.x - self._stuck_ref.pose.position.x
+        dy = pos.pose.position.y - self._stuck_ref.pose.position.y
+        if math.hypot(dx, dy) > STUCK_MIN_MOVE:
+            self._stuck_ref = pos  # andou: reseta referência
+            self._stuck_ticks = 0
+            return False
+        self._stuck_ticks += 1
+        return self._stuck_ticks > STUCK_MAX_TICKS
+
+    def _exec_buscando_parede(self):
+        # Achou a bandeira durante o avanço? vai atrás dela.
+        if self._flag_detec_ticks >= FLAG_DETEC_MIN_TICKS:
+            self._parar()
+            self._set_estado(Estado.NAVEGANDO_PARA_BANDEIRA)
+            return
+        # Tempo de avanço esgotado -> volta a explorar (achou parede nova p/ mapear).
+        self._avanco_ticks += 1
+        if self._avanco_ticks > AVANCO_MAX_TICKS:
+            self._parar()
+            self._set_estado(Estado.EXPLORANDO)
+            return
+        # Desvio: olha o setor frontal. Obstáculo perto -> não avança, gira à esquerda.
+        front = self._range_no_setor(0.0, AVANCO_FRONT_SECTOR)
+        cmd = Twist()
+        if front is not None and front < AVANCO_SAFE_DIST:
+            cmd.linear.x = 0.0
+            cmd.angular.z = AVANCO_GIRO  # vira à esquerda procurando passagem/parede
+        else:
+            cmd.linear.x = AVANCO_VEL
+            cmd.angular.z = 0.0
+        self._pub_cmd.publish(cmd)
+
+    def _parar(self):
+        """Publica velocidade zero (encerra o avanço manual)."""
+        self._pub_cmd.publish(Twist())
 
     def _exec_navegando(self):
         # 1) Chegou? alinhado + flag grande na imagem + perto pelo LIDAR -> pega.
