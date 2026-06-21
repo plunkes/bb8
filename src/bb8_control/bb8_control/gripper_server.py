@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""Servidor de gripper: expõe um Service SetBool no lugar de controle por tópico.
+"""Servidor de gripper: expõe Services SetBool no lugar de controle por tópico.
 
-  /gripper/grab  (std_srvs/SetBool)
-    data=True  -> estende o braço e fecha a garra (pega a flag)
-    data=False -> abre a garra e retrai o braço (postura de navegação)
+Sequência de captura (a FSM chama em ordem):
+  1) /gripper/extend True  -> estende o braço com a garra ABERTA (chega na flag)
+  2) /gripper/grab   True  -> FECHA a garra (pega a flag)
+
+  /gripper/extend (std_srvs/SetBool)
+    data=True  -> braço estendido à frente, garra aberta
+    data=False -> braço retraído (postura de navegação)
+  /gripper/grab (std_srvs/SetBool)
+    data=True  -> fecha a garra (mantém o braço estendido)
+    data=False -> abre a garra (mantém o braço estendido)
 
 É o ÚNICO nó que publica em /gripper_controller/commands. No construtor já
 comanda a postura retraída, garantindo início fechado/recolhido. O estado físico
@@ -17,7 +24,8 @@ from std_srvs.srv import SetBool
 # Ordem das juntas em /gripper_controller/commands (igual ao controller_config.yaml):
 #   [gripper_extension, arm_elbow, right_gripper_joint, left_gripper_joint]
 ARM_RETRAIDO = [-1.5, -1.5, 0.0, 0.0]            # recolhido + garra aberta (navegação)
-ARM_ESTENDIDO_FECHADO = [0.0, 0.0, -0.06, 0.06]  # estendido + garra fechada (pega flag)
+ARM_ESTENDIDO_ABERTO = [0.0, 0.0, 0.0, 0.0]      # estendido à frente, garra ABERTA
+ARM_ESTENDIDO_FECHADO = [0.0, 0.0, -0.06, 0.06]  # estendido, garra FECHADA (pega flag)
 
 
 class GripperServer(Node):
@@ -26,24 +34,38 @@ class GripperServer(Node):
         self._pub = self.create_publisher(
             Float64MultiArray, "/gripper_controller/commands", 10
         )
-        self._srv = self.create_service(SetBool, "/gripper/grab", self._cb_grab)
+        self._estendido = False  # garra aberta/fechada só faz sentido se estendido
+        self._srv_extend = self.create_service(
+            SetBool, "/gripper/extend", self._cb_extend
+        )
+        self._srv_grab = self.create_service(SetBool, "/gripper/grab", self._cb_grab)
         # Início retraído: publica assim que o controlador estiver no ar.
         self._timer = self.create_timer(2.0, self._init_retraido)
-        self.get_logger().info("[gripper] service /gripper/grab pronto")
+        self.get_logger().info("[gripper] services /gripper/extend e /gripper/grab prontos")
 
     def _init_retraido(self):
         self._enviar(ARM_RETRAIDO)
         self._timer.cancel()
         self.get_logger().info("[gripper] postura inicial: RETRAÍDO")
 
-    def _cb_grab(self, req, resp):
+    def _cb_extend(self, req, resp):
         if req.data:
-            self._enviar(ARM_ESTENDIDO_FECHADO)
-            resp.message = "gripper estendido e fechado"
+            self._enviar(ARM_ESTENDIDO_ABERTO)
+            self._estendido = True
+            resp.message = "braço estendido, garra aberta"
         else:
             self._enviar(ARM_RETRAIDO)
-            resp.message = "gripper retraído e aberto"
+            self._estendido = False
+            resp.message = "braço retraído"
         resp.success = True
+        self.get_logger().info(f"[gripper] {resp.message}")
+        return resp
+
+    def _cb_grab(self, req, resp):
+        # Mantém o braço estendido; só muda os dedos.
+        self._enviar(ARM_ESTENDIDO_FECHADO if req.data else ARM_ESTENDIDO_ABERTO)
+        resp.success = True
+        resp.message = "garra fechada" if req.data else "garra aberta"
         self.get_logger().info(f"[gripper] {resp.message}")
         return resp
 

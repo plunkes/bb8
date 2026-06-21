@@ -30,6 +30,8 @@ from rclpy.time import Time
 import tf2_geometry_msgs  # noqa: F401 — registra PoseStamped no tf2 (efeito colateral)
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import Pose2D, PoseStamped, Twist
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.srv import SetParameters
 from nav2_msgs.action import NavigateToPose
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool, Float32
@@ -68,6 +70,18 @@ FLAG_ALIGN_MAX = math.radians(10.0)  # [rad] |bearing| máximo => alinhado com a
 FLAG_RANGE_MAX = 1.0  # [m] range do LIDAR até a flag p/ validar proximidade
 GOAL_REFRESH_TICKS = 10  # re-mira o goal de aproximação a cada ~1 s (rastreia a flag)
 
+# Sequência de captura em POSICIONANDO_FINAL (ticks @ FREQ_CONTROLE=10Hz):
+GRIPPER_EXTEND_TICKS = 15  # ~1.5 s p/ o braço estender antes de avançar
+GRIPPER_CLOSE_TICKS = 15  # ~1.5 s p/ a garra fechar na flag antes de retornar
+GRAB_DIST = 0.30  # [m] para de avançar quando a flag está ao alcance do braço
+CREEP_VEL = 0.12  # [m/s] avanço lento e final até encostar na flag
+CREEP_MAX_TICKS = 30  # ticks ~3 s máx de avanço final (segurança)
+
+# Footprint para a checagem de colisão do Nav2:
+#   normal (braço retraído) vs com o braço estendido segurando a flag (+~0.4 m à frente).
+FOOTPRINT_NORMAL = "[[0.23, 0.17], [0.23, -0.17], [-0.23, -0.17], [-0.23, 0.17]]"
+FOOTPRINT_COM_BRACO = "[[0.62, 0.17], [0.62, -0.17], [-0.23, -0.17], [-0.23, 0.17]]"
+
 # "Encravado" em área aberta: explore manda goals pro lugar onde o robô já está
 # (LIDAR sem retorno -> sem fronteira). Detecta pouca movimentação e avança a esmo.
 STUCK_MIN_MOVE = 0.15  # [m] deslocamento mínimo p/ considerar que está se movendo
@@ -105,8 +119,16 @@ class ControleRobo(Node):
         # Velocidade direta (só usada no estado BUSCANDO_PAREDE; Nav2 não tem goal lá).
         self._pub_cmd = self.create_publisher(Twist, "/cmd_vel", 10)
 
-        # Service do gripper (Task 4): True = estende+fecha, False = retrai+abre.
+        # Services do gripper: estende (braço) e grab (fecha a garra).
+        self._gripper_extend_cli = self.create_client(SetBool, "/gripper/extend")
         self._gripper_cli = self.create_client(SetBool, "/gripper/grab")
+        # Clients p/ trocar o footprint dos costmaps do Nav2 em runtime (braço estendido).
+        self._fp_local_cli = self.create_client(
+            SetParameters, "/local_costmap/local_costmap/set_parameters"
+        )
+        self._fp_global_cli = self.create_client(
+            SetParameters, "/global_costmap/global_costmap/set_parameters"
+        )
 
         # --- TF: usado para transformar a pose da bandeira base_link -> map ---
         self._tf_buffer = Buffer()
@@ -130,6 +152,8 @@ class ControleRobo(Node):
         self._stuck_ref = None  # PoseStamped de referência p/ medir deslocamento
         self._stuck_ticks = 0  # ticks quase parado em EXPLORANDO
         self._avanco_ticks = 0  # ticks indo p/ frente em BUSCANDO_PAREDE
+        self._posic_ticks = 0  # ticks na sequência de captura (POSICIONANDO_FINAL)
+        self._posic_fase = 0  # 0 = estendendo braço, 1 = garra fechando
         self._missao_completa = False
         self._pose_origem = None  # PoseStamped em 'map', gravada ao iniciar
 
@@ -211,7 +235,10 @@ class ControleRobo(Node):
             self._enviar_goal_bandeira()
         elif estado == Estado.POSICIONANDO_FINAL:
             self._set_explore(False)
-            self._pegar_flag()  # (d) estende+fecha o gripper via Service
+            self._posic_ticks = 0
+            self._posic_fase = 0
+            self._gripper_extend(True)  # fase 0: estende o braço (garra aberta)
+            self.get_logger().info("[FSM] Na bandeira — estendendo o braço.")
         elif estado == Estado.RETORNANDO_ORIGEM:
             self._set_explore(False)
             self._nav_retries = 0
@@ -354,8 +381,40 @@ class ControleRobo(Node):
         return True
 
     def _exec_posicionando(self):
-        # _pegar_flag (em _ao_entrar) já comutou para RETORNANDO_ORIGEM.
-        pass
+        # Captura em 3 fases: (0) estende o braço, (1) avança até encostar na flag,
+        # (2) fecha a garra; depois troca o footprint (braço estendido) e retorna.
+        self._posic_ticks += 1
+
+        if self._posic_fase == 0:  # estendendo o braço
+            if self._posic_ticks >= GRIPPER_EXTEND_TICKS:
+                self._posic_fase = 1
+                self._posic_ticks = 0
+            return
+
+        if self._posic_fase == 1:  # avança devagar até a flag ficar ao alcance
+            front = self._range_no_setor(0.0, AVANCO_FRONT_SECTOR)
+            chegou = front is not None and front <= GRAB_DIST
+            if chegou or self._posic_ticks > CREEP_MAX_TICKS:
+                self._parar()
+                self._gripper_grab(True)  # fecha a garra na bandeira
+                self.get_logger().info("[FSM] Encostou na flag — fechando a garra.")
+                self._posic_fase = 2
+                self._posic_ticks = 0
+            else:
+                cmd = Twist()
+                cmd.linear.x = CREEP_VEL
+                self._pub_cmd.publish(cmd)
+            return
+
+        if self._posic_fase == 2:  # garra fechando
+            if self._posic_ticks >= GRIPPER_CLOSE_TICKS:
+                # Agora o robô carrega o braço estendido: aumenta o footprint do
+                # Nav2 p/ ele manobrar a volta considerando o braço.
+                self._set_footprint(FOOTPRINT_COM_BRACO)
+                self.get_logger().info(
+                    "[FSM] Bandeira pega; footprint com braço — retornando à origem."
+                )
+                self._set_estado(Estado.RETORNANDO_ORIGEM)
 
     def _exec_retornando(self):
         if self._nav_status == "sucesso":
@@ -549,17 +608,40 @@ class ControleRobo(Node):
     # ------------------------------------------------------------------ #
     # Conclusão da missão
     # ------------------------------------------------------------------ #
-    def _pegar_flag(self):
-        """(d) Estende o braço e fecha a garra via Service SetBool(True)."""
-        if not self._gripper_cli.wait_for_service(timeout_sec=2.0):
-            self.get_logger().error("[FSM] Service /gripper/grab indisponível.")
-        else:
-            req = SetBool.Request()
-            req.data = True
-            self._gripper_cli.call_async(req)
-            self.get_logger().info("[FSM] Flag agarrada — gripper estendido e fechado.")
-        # Pegou a flag: volta à origem.
-        self._set_estado(Estado.RETORNANDO_ORIGEM)
+    def _gripper_extend(self, estender):
+        """Chama /gripper/extend (True = braço à frente / garra aberta)."""
+        self._chamar_gripper(self._gripper_extend_cli, "/gripper/extend", estender)
+
+    def _gripper_grab(self, fechar):
+        """Chama /gripper/grab (True = fecha a garra na flag)."""
+        self._chamar_gripper(self._gripper_cli, "/gripper/grab", fechar)
+
+    def _chamar_gripper(self, cli, nome, data):
+        if not cli.wait_for_service(timeout_sec=2.0):
+            self.get_logger().error(f"[FSM] Service {nome} indisponível.")
+            return
+        req = SetBool.Request()
+        req.data = bool(data)
+        cli.call_async(req)
+
+    def _set_footprint(self, poligono):
+        """Troca o param 'footprint' dos costmaps local e global em runtime."""
+        val = ParameterValue(
+            type=ParameterType.PARAMETER_STRING, string_value=poligono
+        )
+        param = Parameter(name="footprint", value=val)
+        for cli, nome in (
+            (self._fp_local_cli, "local_costmap"),
+            (self._fp_global_cli, "global_costmap"),
+        ):
+            if not cli.wait_for_service(timeout_sec=2.0):
+                self.get_logger().error(
+                    f"[FSM] set_parameters de {nome} indisponível."
+                )
+                continue
+            req = SetParameters.Request()
+            req.parameters = [param]
+            cli.call_async(req)
 
     def _concluir_missao(self):
         self._cancelar_goal()
