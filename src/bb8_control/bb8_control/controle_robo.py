@@ -463,18 +463,32 @@ class ControleRobo(Node):
                 self._posic_ticks = 0
             return
 
-        if self._posic_fase == 1:  # avança devagar até a flag ficar ao alcance
+        if self._posic_fase == 1:  # centra no pole e avança até a flag ao alcance
+            bearing = self._flag_bearing
+            alinhado = self._bandeira_detectada and abs(bearing) <= FLAG_ALIGN_MAX
             front = self._range_no_setor(0.0, AVANCO_FRONT_SECTOR)
-            chegou = front is not None and front <= GRAB_DIST
-            if chegou or self._posic_ticks > CREEP_MAX_TICKS:
+            perto = front is not None and front <= GRAB_DIST
+            # Só FECHA a garra se estiver alinhado com o pole da flag.
+            if perto and alinhado:
                 self._parar()
                 self._gripper_grab(True)  # fecha a garra na bandeira
-                self.get_logger().info("[FSM] Encostou na flag — fechando a garra.")
+                self.get_logger().info("[FSM] Alinhado e encostado — fechando a garra.")
                 self._posic_fase = 2
                 self._posic_ticks = 0
+            elif self._posic_ticks > CREEP_MAX_TICKS:
+                # Não conseguiu alinhar/encostar a tempo: NÃO pega torto — re-aproxima.
+                self._parar()
+                self.get_logger().warn(
+                    "[FSM] Não alinhou com o pole a tempo — re-aproximando."
+                )
+                self._set_estado(Estado.NAVEGANDO_PARA_BANDEIRA)
             else:
                 cmd = Twist()
-                cmd.linear.x = CREEP_VEL
+                # Mantém o pole centrado; só avança quando alinhado.
+                if self._bandeira_detectada:
+                    w = VS_KP * bearing
+                    cmd.angular.z = max(-VS_MAX_W, min(VS_MAX_W, w))
+                cmd.linear.x = CREEP_VEL if alinhado else 0.0
                 self._pub_cmd.publish(cmd)
             return
 

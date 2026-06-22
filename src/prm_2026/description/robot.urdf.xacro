@@ -352,8 +352,8 @@
 
     <joint name="gripper_extension">
       <command_interface name="position">
-        <param name="min">-1.57075</param>
-        <param name="max">0.2</param>
+        <param name="min">-1.5708</param>
+        <param name="max">0.0</param>
       </command_interface>
       <!-- Início RETRAÍDO: braço recolhido contra o corpo já no spawn -->
       <state_interface name="position">
@@ -365,7 +365,7 @@
     <joint name="arm_elbow">
       <command_interface name="position">
         <param name="min">-1.5708</param>
-        <param name="max">0.5</param>
+        <param name="max">0.0</param>
       </command_interface>
       <state_interface name="position">
         <param name="initial_value">-1.5</param>
@@ -644,7 +644,7 @@
        lower=0 (reto para a frente), upper=0.785398 rad (45 graus). -->
   <joint name="shoulder_pitch" type="revolute">
     <axis xyz="0 -1 0"/>
-    <limit effort="50.0" lower="0.0" upper="0.785398" velocity="0.5"/>
+    <limit effort="50.0" lower="0.0" upper="0.785398" velocity="2.0"/>
     <origin rpy="0 0 0" xyz="0.2 0 0.05"/>
     <parent link="base_link"/>
     <child link="arm_base"/>
@@ -674,7 +674,8 @@
        Re-parented para arm_base para herdar o pitch da Junta 1. -->
   <joint name="gripper_extension" type="revolute">
     <axis xyz="0 0 1"/>
-    <limit effort="50.0" lower="-1.57075" upper="0.2" velocity="0.5"/>
+    <!-- Junta horizontal: amplitude limitada a 90° (-1.5708 a 0). Velocidade 2.0 (desdobra rápido). -->
+    <limit effort="50.0" lower="-1.5708" upper="0.0" velocity="2.0"/>
     <origin rpy="0 0 0" xyz="0.04 0 0"/>
     <parent link="arm_base"/>
     <child link="upper_arm"/>
@@ -700,7 +701,8 @@
   <!-- Elbow: folds lower arm back toward body (same Z-axis rotation) -->
   <joint name="arm_elbow" type="revolute">
     <axis xyz="0 0 1"/>
-    <limit effort="50.0" lower="-1.5708" upper="0.5" velocity="0.5"/>
+    <!-- Junta horizontal: amplitude limitada a 90° (-1.5708 a 0). Velocidade 2.0 (desdobra rápido). -->
+    <limit effort="50.0" lower="-1.5708" upper="0.0" velocity="2.0"/>
     <origin xyz="0.15 0 0" rpy="0 0 0"/>
     <parent link="upper_arm"/>
     <child link="gripper_pole"/>
