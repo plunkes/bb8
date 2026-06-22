@@ -699,7 +699,7 @@ class ControleRobo(Node):
             return False  # fora dos limites do mapa
         val = grid.data[my * info.width + mx]
         # -1 = desconhecido; >= COSTMAP_LIVRE_MAX = ocupado/inflado.
-        return 0 <= val < COSTMAP_LIVRE_MAX
+        return -1 <= val < COSTMAP_LIVRE_MAX
 
     def _range_no_setor(self, centro_rad, meia_largura_rad):
         """Menor range válido do LIDAR num setor [centro ± meia_largura]. None se vazio."""

@@ -12,8 +12,8 @@ bt_navigator:
     global_frame: map
     robot_base_frame: base_link
     odom_topic: /odom_gt
-    bt_loop_duration: 10
-    default_server_timeout: 20
+    bt_loop_duration: 50
+    default_server_timeout: 30
     # BT customizada SEM o recovery BackUp (sem ré). O caminho absoluto é
     # injetado em runtime pelo launch (RewrittenYaml) — este valor é placeholder.
     default_nav_to_pose_bt_xml: "OVERRIDDEN_AT_LAUNCH"
@@ -67,7 +67,7 @@ bt_navigator:
 controller_server:
   ros__parameters:
     use_sim_time: true
-    controller_frequency: 20.0   # 30 Hz estourava o loop ("missed its desired rate")
+    controller_frequency: 20.0 # 30 Hz estourava o loop ("missed its desired rate")
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.5
     min_theta_velocity_threshold: 0.001
@@ -90,23 +90,23 @@ controller_server:
     FollowPath:
       plugin: dwb_core::DWBLocalPlanner
       debug_trajectory_details: true
-      min_vel_x: 0.0    # SEM ré: pra mudar de direção, gira no lugar (rodas centradas)
+      min_vel_x: 0.0 # SEM ré: pra mudar de direção, gira no lugar (rodas centradas)
       min_vel_y: 0.0
-      max_vel_x: 1.0    # menos corte de curva a alta velocidade (raspava obstáculo)
+      max_vel_x: 1.0 # menos corte de curva a alta velocidade (raspava obstáculo)
       max_vel_y: 0.0
-      max_vel_theta: 2.5   # giro mais rápido p/ virar 180° com facilidade
+      max_vel_theta: 2.5 # giro mais rápido p/ virar 180° com facilidade
       min_speed_xy: 0.0
       max_speed_xy: 1.0
       min_speed_theta: 0.0
-      acc_lim_x: 3.0      # acel/decel maiores p/ parar a tempo a 1.2 m/s
+      acc_lim_x: 3.0 # acel/decel maiores p/ parar a tempo a 1.2 m/s
       acc_lim_y: 0.0
-      acc_lim_theta: 4.0   # acel angular alta = entra/sai do giro rápido
+      acc_lim_theta: 4.0 # acel angular alta = entra/sai do giro rápido
       decel_lim_x: -3.0
       decel_lim_y: 0.0
       decel_lim_theta: -4.0
       vx_samples: 20
       vy_samples: 0
-      vtheta_samples: 40   # amostragem angular mais fina p/ girar em corredor estreito
+      vtheta_samples: 40 # amostragem angular mais fina p/ girar em corredor estreito
       sim_time: 1.5
       linear_granularity: 0.05
       angular_granularity: 0.025
@@ -115,9 +115,19 @@ controller_server:
       trans_stopped_velocity: 0.25
       short_circuit_trajectory_evaluation: true
       stateful: true
-      critics: [RotateToGoal, Oscillation, BaseObstacle, GoalAlign, PathAlign, PathDist, GoalDist]
-      BaseObstacle.scale: 0.15   # peso de obstáculo menor: aceita trajetórias
-                                 # válidas que passam rente a obstáculos laterais
+      critics:
+        [
+          RotateToGoal,
+          Oscillation,
+          BaseObstacle,
+          GoalAlign,
+          PathAlign,
+          PathDist,
+          GoalDist,
+        ]
+      BaseObstacle.scale:
+        0.15 # peso de obstáculo menor: aceita trajetórias
+        # válidas que passam rente a obstáculos laterais
       PathAlign.scale: 32.0
       PathAlign.forward_point_distance: 0.1
       GoalAlign.scale: 24.0
@@ -142,7 +152,7 @@ local_costmap:
       resolution: 0.05
       # footprint poligonal real (base 0.42 x 0.31 m) em vez de raio circular
       footprint: "[[0.23, 0.17], [0.23, -0.17], [-0.23, -0.17], [-0.23, 0.17]]"
-      footprint_padding: 0.05   # margem de colisão menor: menos medo de obstáculo lateral
+      footprint_padding: 0.05 # margem de colisão menor: menos medo de obstáculo lateral
       plugins: [obstacle_layer, inflation_layer]
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
@@ -175,7 +185,7 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_link
       footprint: "[[0.23, 0.17], [0.23, -0.17], [-0.23, -0.17], [-0.23, 0.17]]"
-      footprint_padding: 0.05   # margem de colisão menor: menos medo de obstáculo lateral
+      footprint_padding: 0.05 # margem de colisão menor: menos medo de obstáculo lateral
       resolution: 0.05
       track_unknown_space: true
       plugins: [static_layer, obstacle_layer, inflation_layer]
@@ -264,7 +274,7 @@ velocity_smoother:
     scale_velocities: false
     feedback: OPEN_LOOP
     max_velocity: [1.0, 0.0, 2.5]
-    min_velocity: [0.0, 0.0, -2.5]   # sem ré; giro livre nos 2 sentidos
+    min_velocity: [0.0, 0.0, -2.5] # sem ré; giro livre nos 2 sentidos
     max_accel: [3.0, 0.0, 4.0]
     max_decel: [-3.0, 0.0, -4.0]
     odom_topic: /odom_gt
