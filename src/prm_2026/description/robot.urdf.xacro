@@ -337,6 +337,19 @@
       <state_interface name="velocity"/>
     </joint>
 
+    <!-- Junta 1 (ombro/base do braço): PITCH vertical, levanta o braço 0 -> 45 graus -->
+    <joint name="shoulder_pitch">
+      <command_interface name="position">
+        <param name="min">0.0</param>
+        <param name="max">0.785398</param>
+      </command_interface>
+      <!-- Início em 0 graus: braço apontando reto para a frente -->
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+
     <joint name="gripper_extension">
       <command_interface name="position">
         <param name="min">-1.57075</param>
@@ -481,7 +494,9 @@
   <joint name="camera_joint" type="fixed">
     <parent link="base_link"/>
     <child link="camera_link"/>
-    <origin xyz="0.215 0 0.05" rpy="0 0 0"/>
+    <!-- Câmera levemente acima do plano do braço retraído (arm_base z=0.05),
+         senão o braço recolhido fica na frente da lente. -->
+    <origin xyz="0.215 0 0.085" rpy="0 0 0"/>
   </joint>
 
   <link name="camera_frame"/>
@@ -624,12 +639,44 @@
 
   </gazebo>
 
-  <!-- Shoulder: sweeps arm sideways (Z-axis rotation) -->
+  <!-- Junta 1 - Ombro/base do braço: PITCH no plano vertical.
+       axis (0 -1 0): rotação positiva LEVANTA a ponta do braço.
+       lower=0 (reto para a frente), upper=0.785398 rad (45 graus). -->
+  <joint name="shoulder_pitch" type="revolute">
+    <axis xyz="0 -1 0"/>
+    <limit effort="50.0" lower="0.0" upper="0.785398" velocity="0.5"/>
+    <origin rpy="0 0 0" xyz="0.2 0 0.05"/>
+    <parent link="base_link"/>
+    <child link="arm_base"/>
+  </joint>
+
+  <!-- Link curto do ombro: tudo abaixo herda o pitch desta junta -->
+  <link name="arm_base">
+    <visual>
+      <geometry>
+        <cylinder length="0.04" radius="0.012"/>
+      </geometry>
+      <origin rpy="0 1.57075 0" xyz="0.02 0 0"/>
+      <material name="LightBlue">
+        <color rgba="0.11 0.37 0.56 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <cylinder length="0.04" radius="0.012"/>
+      </geometry>
+      <origin rpy="0 1.57075 0" xyz="0.02 0 0"/>
+    </collision>
+    <xacro:cylinder_inertia m="0.01" r="0.012" h="0.04"/>
+  </link>
+
+  <!-- Junta 2: horizontal (yaw, Z-axis), varre o braço lateralmente.
+       Re-parented para arm_base para herdar o pitch da Junta 1. -->
   <joint name="gripper_extension" type="revolute">
     <axis xyz="0 0 1"/>
     <limit effort="50.0" lower="-1.57075" upper="0.2" velocity="0.5"/>
-    <origin rpy="0 0 0" xyz="0.2 0 0.05"/>
-    <parent link="base_link"/>
+    <origin rpy="0 0 0" xyz="0.04 0 0"/>
+    <parent link="arm_base"/>
     <child link="upper_arm"/>
   </joint>
 

@@ -36,6 +36,7 @@ setup(
             "controle_robo = bb8_control.controle_robo:main",
             "vision_processor = bb8_control.vision_processor:main",
             "gripper_server = bb8_control.gripper_server:main",
+            "scan_masker = bb8_control.scan_masker:main",
         ],
     },
 )

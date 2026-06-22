@@ -68,6 +68,17 @@ def generate_launch_description():
         output="screen",
     )
 
+    # 3b. Filtro dinâmico do LIDAR: mascara o setor frontal quando o braço
+    #     (shoulder_pitch) está levantado a 45°. Publica /scan_filtered, que é
+    #     o scan consumido por SLAM e Nav2.
+    scan_masker = Node(
+        package="bb8_control",
+        executable="scan_masker",
+        name="scan_masker",
+        parameters=[{"use_sim_time": True}],
+        output="screen",
+    )
+
     # 4. SLAM (mapeamento online assíncrono)
     slam = Node(
         package="slam_toolbox",
@@ -131,6 +142,8 @@ def generate_launch_description():
             simulacao,
             robo,
             gt_odom,
+            # Filtro do LIDAR antes do SLAM (precisa publicar /scan_filtered)
+            TimerAction(period=5.0, actions=[scan_masker]),
             # SLAM após o robô/controladores subirem
             TimerAction(period=6.0, actions=[slam]),
             # Nav2 depois do SLAM publicar map->odom
