@@ -24,12 +24,18 @@ import rclpy
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
 from rclpy.time import Time
 
 import tf2_geometry_msgs  # noqa: F401 — registra PoseStamped no tf2 (efeito colateral)
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import Pose2D, PoseStamped, Twist
+from nav_msgs.msg import OccupancyGrid
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
 from nav2_msgs.action import NavigateToPose
@@ -60,6 +66,11 @@ SETOR_BANDEIRA = math.radians(
 )  # meia-largura do setor LIDAR amostrado em torno do bearing
 RANGE_FALLBACK = 2.5  # [m] estimativa de distância se o LIDAR não retornar no setor
 NAV_RETRY_MAX = 3  # tentativas de reenvio de goal antes de desistir e re-explorar
+# Bandeira costuma estar fora da área já mapeada pelo LIDAR -> goal cai em célula
+# desconhecida e o Nav2 trava. Tenta o goal cheio e, se inalcançável, vai pegando
+# metades do trajeto até cair numa célula livre e conhecida do global costmap.
+GOAL_FRACOES = (1.0, 0.5, 0.25, 0.125, 0.0625)
+COSTMAP_LIVRE_MAX = 65  # valor < isto (e >= 0) no global costmap => célula livre/conhecida
 # Se o LIDAR no setor da flag vier mais curto que a estimativa da câmera por mais
 # que isto, há um OBSTÁCULO entre o robô e a flag -> confia na câmera (não no LIDAR).
 OBSTACULO_TOL = 0.5  # [m]
@@ -120,6 +131,17 @@ class ControleRobo(Node):
         self.create_subscription(
             Float32, "/vision/flag_distance", self._cb_distancia, 10
         )
+        # Global costmap (latched/transient_local) p/ checar se o goal da bandeira
+        # cai em célula livre+conhecida antes de mandar p/ o Nav2.
+        qos_costmap = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self.create_subscription(
+            OccupancyGrid, "/global_costmap/costmap", self._cb_costmap, qos_costmap
+        )
 
         # --- Saídas ---
         # Controle do explore_lite: True retoma, False pausa (e cancela goal no Nav2).
@@ -148,6 +170,7 @@ class ControleRobo(Node):
         # --- Estado interno ---
         self._estado = Estado.INICIALIZANDO
         self._scan = None
+        self._costmap = None  # último OccupancyGrid do global_costmap
         self._bandeira_detectada = False
         self._flag_bearing = 0.0  # [rad] + = bandeira à esquerda
         self._flag_area = 0.0  # [px] área da flag na imagem (do vision_processor)
@@ -180,6 +203,9 @@ class ControleRobo(Node):
     # ------------------------------------------------------------------ #
     def _cb_scan(self, msg):
         self._scan = msg
+
+    def _cb_costmap(self, msg):
+        self._costmap = msg
 
     def _cb_visao(self, msg):
         # Pose2D do vision_processor: x=centroide_x, y=área[px], theta=1.0 se detectada.
@@ -477,15 +503,40 @@ class ControleRobo(Node):
     # Cálculo e envio do goal da bandeira
     # ------------------------------------------------------------------ #
     def _enviar_goal_bandeira(self):
-        pose = self._calcular_pose_bandeira()
+        # Tenta o goal cheio e, se cair fora do mapa/em célula desconhecida (a flag
+        # costuma estar além do que o LIDAR já mapeou), encurta o trajeto pela metade
+        # sucessivamente até achar um goal alcançável dentro do global costmap.
+        pose = None
+        fracao_ok = 1.0
+        for fracao in GOAL_FRACOES:
+            cand = self._calcular_pose_bandeira(fracao)
+            if cand is None:
+                # Sem TF/scan ainda: tenta de novo no próximo tick (não comuta estado).
+                self.get_logger().warn(
+                    "[FSM] Não foi possível calcular a pose da bandeira ainda.",
+                    throttle_duration_sec=1.0,
+                )
+                self._nav_status = "falha"
+                return
+            if self._goal_alcancavel(cand):
+                pose = cand
+                fracao_ok = fracao
+                break
+
         if pose is None:
-            # Sem TF/scan ainda: tenta de novo no próximo tick (não comuta estado).
             self.get_logger().warn(
-                "[FSM] Não foi possível calcular a pose da bandeira ainda.",
+                "[FSM] Nenhuma fração do trajeto até a bandeira caiu em célula "
+                "livre/conhecida; aguardando mais mapa.",
                 throttle_duration_sec=1.0,
             )
             self._nav_status = "falha"
             return
+
+        if fracao_ok < 1.0:
+            self.get_logger().info(
+                f"[FSM] Goal cheio inalcançável (flag fora do mapa); "
+                f"mirando {fracao_ok*100:.0f}% do trajeto."
+            )
 
         if not self._nav_client.server_is_ready():
             self._nav_status = "falha"
@@ -555,8 +606,13 @@ class ControleRobo(Node):
             return cam
         return lidar  # pode ser None
 
-    def _calcular_pose_bandeira(self):
-        """Funde bearing (câmera) + range (câmera/LIDAR) -> PoseStamped em 'map'."""
+    def _calcular_pose_bandeira(self, fracao=1.0):
+        """Funde bearing (câmera) + range (câmera/LIDAR) -> PoseStamped em 'map'.
+
+        `fracao` encurta o trajeto: 1.0 = goal cheio (junto à flag), 0.5 = metade
+        do caminho, etc. Usado para puxar o goal p/ dentro da área mapeada quando
+        a flag está fora do alcance já visto pelo LIDAR.
+        """
         if self._scan is None:
             return None
 
@@ -567,7 +623,7 @@ class ControleRobo(Node):
 
         # Distância do goal: para STOP_DIST antes da flag. Se já estamos perto,
         # mira a própria posição da flag (clamp >= 0) — o controlador do Nav2 para.
-        goal_rng = max(0.0, rng - STOP_DIST)
+        goal_rng = max(0.0, rng - STOP_DIST) * fracao
 
         # Posição na direção do bearing, no frame base_link (+x à frente, +y à esquerda).
         gx = goal_rng * math.cos(bearing)
@@ -596,6 +652,23 @@ class ControleRobo(Node):
 
         pose_map.header.stamp = self.get_clock().now().to_msg()
         return pose_map
+
+    def _goal_alcancavel(self, pose_map):
+        """True se a pose (frame 'map') cai numa célula livre+conhecida do global
+        costmap. Sem costmap ainda -> True (não bloqueia; comportamento antigo)."""
+        grid = self._costmap
+        if grid is None:
+            return True
+        info = grid.info
+        if info.resolution <= 0.0:
+            return True
+        mx = int((pose_map.pose.position.x - info.origin.position.x) / info.resolution)
+        my = int((pose_map.pose.position.y - info.origin.position.y) / info.resolution)
+        if mx < 0 or my < 0 or mx >= info.width or my >= info.height:
+            return False  # fora dos limites do mapa
+        val = grid.data[my * info.width + mx]
+        # -1 = desconhecido; >= COSTMAP_LIVRE_MAX = ocupado/inflado.
+        return 0 <= val < COSTMAP_LIVRE_MAX
 
     def _range_no_setor(self, centro_rad, meia_largura_rad):
         """Menor range válido do LIDAR num setor [centro ± meia_largura]. None se vazio."""

@@ -232,10 +232,11 @@ behavior_server:
     costmap_topic: local_costmap/costmap_raw
     footprint_topic: local_costmap/published_footprint
     cycle_frequency: 10.0
-    # 'backup' precisa existir como SERVER senão a BT default navigate_through_poses
-    # (que referencia BackUp) falha ao carregar e o bt_navigator não ativa.
-    # A ré é evitada na prática: o robô só roda navigate_to_pose, cuja BT custom
-    # (navigate_no_backup.xml) NÃO chama BackUp. nav_through_poses nunca é executada.
+    # 'backup' e 'spin' precisam existir como SERVER senão a BT default
+    # navigate_through_poses (que referencia BackUp/Spin) falha ao carregar e o
+    # bt_navigator não ativa. Na prática nenhum é usado: o robô só roda
+    # navigate_to_pose, cuja BT custom (navigate_no_backup.xml) NÃO chama BackUp
+    # nem Spin. nav_through_poses nunca é executada.
     behavior_plugins: [spin, backup, drive_on_heading, assisted_teleop, wait]
     spin:
       plugin: nav2_behaviors/Spin
