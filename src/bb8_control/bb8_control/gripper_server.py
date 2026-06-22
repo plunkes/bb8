@@ -6,11 +6,14 @@ Sequência de captura (a FSM chama em ordem):
   2) /gripper/grab   True  -> FECHA a garra (pega a flag)
 
   /gripper/extend (std_srvs/SetBool)
-    data=True  -> braço estendido à frente, garra aberta
+    data=True  -> braço estendido à frente NO NÍVEL da flag (ombro baixo), garra aberta
     data=False -> braço retraído (postura de navegação)
   /gripper/grab (std_srvs/SetBool)
-    data=True  -> fecha a garra (mantém o braço estendido)
-    data=False -> abre a garra (mantém o braço estendido)
+    data=True  -> fecha a garra (ombro continua baixo)
+    data=False -> abre a garra (ombro continua baixo)
+  /gripper/lift (std_srvs/SetBool)
+    data=True  -> LEVANTA o ombro a 45° (ergue a flag já presa); só após o grab
+    data=False -> abaixa o ombro de volta ao nível da flag
 
 É o ÚNICO nó que publica em /gripper_controller/commands. No construtor já
 comanda a postura retraída, garantindo início fechado/recolhido. O estado físico
@@ -23,13 +26,15 @@ from std_srvs.srv import SetBool
 
 # Ordem das juntas em /gripper_controller/commands (igual ao controller_config.yaml):
 #   [shoulder_pitch, gripper_extension, arm_elbow, right_gripper_joint, left_gripper_joint]
-# shoulder_pitch (Junta 1): 0.0 = reto p/ frente; 0.785398 = levantado 45 graus
+# shoulder_pitch (Junta 1): 0.0 = reto p/ frente (nível da flag); 0.785398 = levantado 45°
 #   (nessa posição o braço entra no FOV do LIDAR -> scan_masker mascara o frontal).
+# A flag só é ERGUIDA (ombro 45°) DEPOIS que a garra fecha em volta dela (/gripper/lift).
 # Dedos: [right_gripper_joint, left_gripper_joint]. 0,0 = FECHADO (gap 0.02);
 #        -0.06,0.06 = ABERTO (gap 0.14). (ver limites das juntas no URDF)
 ARM_RETRAIDO = [0.0, -1.5, -1.5, 0.0, 0.0]            # ombro baixo, recolhido + garra FECHADA (início)
-ARM_ESTENDIDO_ABERTO = [0.785398, 0.0, 0.0, -0.06, 0.06]   # ombro 45°, estendido, garra ABERTA
-ARM_ESTENDIDO_FECHADO = [0.785398, 0.0, 0.0, 0.0, 0.0]     # ombro 45°, estendido, garra FECHADA (pega flag)
+ARM_ESTENDIDO_ABERTO = [0.0, 0.0, 0.0, -0.06, 0.06]   # ombro BAIXO, estendido, garra ABERTA
+ARM_ESTENDIDO_FECHADO = [0.0, 0.0, 0.0, 0.0, 0.0]     # ombro BAIXO, estendido, garra FECHADA (pega flag)
+ARM_LEVANTADO_FECHADO = [0.785398, 0.0, 0.0, 0.0, 0.0]  # ombro 45°, garra FECHADA (ergue a flag)
 
 
 class GripperServer(Node):
@@ -43,6 +48,7 @@ class GripperServer(Node):
             SetBool, "/gripper/extend", self._cb_extend
         )
         self._srv_grab = self.create_service(SetBool, "/gripper/grab", self._cb_grab)
+        self._srv_lift = self.create_service(SetBool, "/gripper/lift", self._cb_lift)
         # Início retraído: publica assim que o controlador estiver no ar.
         self._timer = self.create_timer(2.0, self._init_retraido)
         self.get_logger().info("[gripper] services /gripper/extend e /gripper/grab prontos")
@@ -66,10 +72,18 @@ class GripperServer(Node):
         return resp
 
     def _cb_grab(self, req, resp):
-        # Mantém o braço estendido; só muda os dedos.
+        # Ombro permanece BAIXO (nível da flag); só muda os dedos.
         self._enviar(ARM_ESTENDIDO_FECHADO if req.data else ARM_ESTENDIDO_ABERTO)
         resp.success = True
         resp.message = "garra fechada" if req.data else "garra aberta"
+        self.get_logger().info(f"[gripper] {resp.message}")
+        return resp
+
+    def _cb_lift(self, req, resp):
+        # Ergue/abaixa o ombro mantendo a garra FECHADA (chamado após o grab).
+        self._enviar(ARM_LEVANTADO_FECHADO if req.data else ARM_ESTENDIDO_FECHADO)
+        resp.success = True
+        resp.message = "flag erguida (ombro 45°)" if req.data else "ombro abaixado"
         self.get_logger().info(f"[gripper] {resp.message}")
         return resp
 

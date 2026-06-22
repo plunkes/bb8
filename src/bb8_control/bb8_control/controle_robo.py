@@ -91,7 +91,8 @@ VS_ALIGN = math.radians(12.0)  # |bearing| p/ considerar centrada e poder avanç
 
 # Sequência de captura em POSICIONANDO_FINAL (ticks @ FREQ_CONTROLE=10Hz):
 GRIPPER_EXTEND_TICKS = 15  # ~1.5 s p/ o braço estender antes de avançar
-GRIPPER_CLOSE_TICKS = 15  # ~1.5 s p/ a garra fechar na flag antes de retornar
+GRIPPER_CLOSE_TICKS = 15  # ~1.5 s p/ a garra fechar na flag antes de erguer
+GRIPPER_LIFT_TICKS = 15  # ~1.5 s p/ o ombro erguer a flag antes de retornar
 GRAB_DIST = 0.22  # [m] para de avançar quando a flag está ao alcance do braço
 CREEP_VEL = 0.12  # [m/s] avanço lento e final até encostar na flag
 CREEP_MAX_TICKS = 30  # ticks ~3 s máx de avanço final (segurança)
@@ -152,6 +153,7 @@ class ControleRobo(Node):
         # Services do gripper: estende (braço) e grab (fecha a garra).
         self._gripper_extend_cli = self.create_client(SetBool, "/gripper/extend")
         self._gripper_cli = self.create_client(SetBool, "/gripper/grab")
+        self._gripper_lift_cli = self.create_client(SetBool, "/gripper/lift")
         # Clients p/ trocar o footprint dos costmaps do Nav2 em runtime (braço estendido).
         self._fp_local_cli = self.create_client(
             SetParameters, "/local_costmap/local_costmap/set_parameters"
@@ -449,8 +451,10 @@ class ControleRobo(Node):
         self._pub_cmd.publish(cmd)
 
     def _exec_posicionando(self):
-        # Captura em 3 fases: (0) estende o braço, (1) avança até encostar na flag,
-        # (2) fecha a garra; depois troca o footprint (braço estendido) e retorna.
+        # Captura em 4 fases: (0) estende o braço no nível da flag, (1) avança até
+        # encostar na flag, (2) fecha a garra, (3) ERGUE a flag (ombro 45°) — só
+        # depois disso troca o footprint e retorna à origem. Erguer tira a flag da
+        # frente do robô e o scan_masker mascara o setor frontal (não vira obstáculo).
         self._posic_ticks += 1
 
         if self._posic_fase == 0:  # estendendo o braço
@@ -476,11 +480,20 @@ class ControleRobo(Node):
 
         if self._posic_fase == 2:  # garra fechando
             if self._posic_ticks >= GRIPPER_CLOSE_TICKS:
-                # Agora o robô carrega o braço estendido: aumenta o footprint do
-                # Nav2 p/ ele manobrar a volta considerando o braço.
+                # Garra fechou em volta da flag: agora SIM ergue a flag (ombro 45°).
+                self._gripper_lift(True)
+                self.get_logger().info("[FSM] Garra fechada — erguendo a flag.")
+                self._posic_fase = 3
+                self._posic_ticks = 0
+            return
+
+        if self._posic_fase == 3:  # erguendo a flag (ombro 45°)
+            if self._posic_ticks >= GRIPPER_LIFT_TICKS:
+                # Flag erguida e fora do FOV frontal (scan_masker mascara): aumenta
+                # o footprint p/ manobrar e retorna à origem.
                 self._set_footprint(FOOTPRINT_COM_BRACO)
                 self.get_logger().info(
-                    "[FSM] Bandeira pega; footprint com braço — retornando à origem."
+                    "[FSM] Flag erguida; footprint com braço — retornando à origem."
                 )
                 self._set_estado(Estado.RETORNANDO_ORIGEM)
 
@@ -730,6 +743,10 @@ class ControleRobo(Node):
     def _gripper_grab(self, fechar):
         """Chama /gripper/grab (True = fecha a garra na flag)."""
         self._chamar_gripper(self._gripper_cli, "/gripper/grab", fechar)
+
+    def _gripper_lift(self, erguer):
+        """Chama /gripper/lift (True = ergue a flag, ombro 45°). Só após o grab."""
+        self._chamar_gripper(self._gripper_lift_cli, "/gripper/lift", erguer)
 
     def _chamar_gripper(self, cli, nome, data):
         if not cli.wait_for_service(timeout_sec=2.0):
