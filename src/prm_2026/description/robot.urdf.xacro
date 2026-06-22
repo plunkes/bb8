@@ -355,9 +355,10 @@
         <param name="min">-1.5708</param>
         <param name="max">0.0</param>
       </command_interface>
-      <!-- Início RETRAÍDO: braço recolhido contra o corpo já no spawn -->
+      <!-- Início RETRAÍDO em -90°: braço recolhido ao lado já no spawn. Estender
+           leva a 0 (90° de varredura) = diretamente à frente do robô. -->
       <state_interface name="position">
-        <param name="initial_value">-1.5</param>
+        <param name="initial_value">-1.5708</param>
       </state_interface>
       <state_interface name="velocity"/>
     </joint>
@@ -368,7 +369,7 @@
         <param name="max">0.0</param>
       </command_interface>
       <state_interface name="position">
-        <param name="initial_value">-1.5</param>
+        <param name="initial_value">-1.5708</param>
       </state_interface>
       <state_interface name="velocity"/>
     </joint>

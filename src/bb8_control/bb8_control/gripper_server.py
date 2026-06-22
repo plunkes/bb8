@@ -31,9 +31,9 @@ from std_srvs.srv import SetBool
 # A flag só é ERGUIDA (ombro 45°) DEPOIS que a garra fecha em volta dela (/gripper/lift).
 # Dedos: [right_gripper_joint, left_gripper_joint]. 0,0 = FECHADO (gap 0.02);
 #        -0.06,0.06 = ABERTO (gap 0.14). (ver limites das juntas no URDF)
-ARM_RETRAIDO = [0.0, -1.5, -1.5, 0.0, 0.0]            # ombro baixo, recolhido + garra FECHADA (início)
-ARM_ESTENDIDO_ABERTO = [0.0, 0.0, 0.0, -0.06, 0.06]   # ombro BAIXO, estendido, garra ABERTA
-ARM_ESTENDIDO_FECHADO = [0.0, 0.0, 0.0, 0.0, 0.0]     # ombro BAIXO, estendido, garra FECHADA (pega flag)
+ARM_RETRAIDO = [0.0, -1.5708, -1.5708, 0.0, 0.0]      # ombro baixo, braço recolhido a -90° + garra FECHADA (início)
+ARM_ESTENDIDO_ABERTO = [0.0, 0.0, 0.0, -0.06, 0.06]   # ombro BAIXO, braço a 0° = diretamente à frente, garra ABERTA
+ARM_ESTENDIDO_FECHADO = [0.0, 0.0, 0.0, 0.0, 0.0]     # ombro BAIXO, à frente, garra FECHADA (pega flag)
 ARM_LEVANTADO_FECHADO = [0.785398, 0.0, 0.0, 0.0, 0.0]  # ombro 45°, garra FECHADA (ergue a flag)
 
 

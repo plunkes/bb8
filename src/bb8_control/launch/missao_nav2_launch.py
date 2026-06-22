@@ -49,7 +49,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([pkg_sim, "launch", "inicia_simulacao.launch.py"])
         ),
-        launch_arguments={"world": "arena_paredes.sdf"}.items(),
+        launch_arguments={"world": "arena_cilindros.sdf"}.items(),
     )
 
     # 2. Robô + controladores + bridges + RViz

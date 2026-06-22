@@ -58,7 +58,9 @@ class Estado(Enum):
 # gripper_server — esta FSM não publica mais em /gripper_controller/commands.
 
 # Detecção / aproximação da bandeira
-FLAG_DETEC_MIN_TICKS = 3  # ticks consecutivos de detecção antes de comutar p/ navegação
+FLAG_DETEC_MIN_TICKS = (
+    10  # ticks consecutivos de detecção antes de comutar p/ navegação
+)
 FLAG_PERDA_MAX = 25  # ticks sem detecção, durante a navegação, antes de re-explorar
 STOP_DIST = 0.45  # [m] distância de parada à frente da flag (braço alcança o mastro)
 SETOR_BANDEIRA = math.radians(
@@ -70,7 +72,9 @@ NAV_RETRY_MAX = 3  # tentativas de reenvio de goal antes de desistir e re-explor
 # desconhecida e o Nav2 trava. Tenta o goal cheio e, se inalcançável, vai pegando
 # metades do trajeto até cair numa célula livre e conhecida do global costmap.
 GOAL_FRACOES = (1.0, 0.5, 0.25, 0.125, 0.0625)
-COSTMAP_LIVRE_MAX = 65  # valor < isto (e >= 0) no global costmap => célula livre/conhecida
+COSTMAP_LIVRE_MAX = (
+    65  # valor < isto (e >= 0) no global costmap => célula livre/conhecida
+)
 # Se o LIDAR no setor da flag vier mais curto que a estimativa da câmera por mais
 # que isto, há um OBSTÁCULO entre o robô e a flag -> confia na câmera (não no LIDAR).
 OBSTACULO_TOL = 0.5  # [m]
@@ -562,7 +566,7 @@ class ControleRobo(Node):
         if fracao_ok < 1.0:
             self.get_logger().info(
                 f"[FSM] Goal cheio inalcançável (flag fora do mapa); "
-                f"mirando {fracao_ok*100:.0f}% do trajeto."
+                f"mirando {fracao_ok * 100:.0f}% do trajeto."
             )
 
         if not self._nav_client.server_is_ready():
@@ -772,18 +776,14 @@ class ControleRobo(Node):
 
     def _set_footprint(self, poligono):
         """Troca o param 'footprint' dos costmaps local e global em runtime."""
-        val = ParameterValue(
-            type=ParameterType.PARAMETER_STRING, string_value=poligono
-        )
+        val = ParameterValue(type=ParameterType.PARAMETER_STRING, string_value=poligono)
         param = Parameter(name="footprint", value=val)
         for cli, nome in (
             (self._fp_local_cli, "local_costmap"),
             (self._fp_global_cli, "global_costmap"),
         ):
             if not cli.wait_for_service(timeout_sec=2.0):
-                self.get_logger().error(
-                    f"[FSM] set_parameters de {nome} indisponível."
-                )
+                self.get_logger().error(f"[FSM] set_parameters de {nome} indisponível.")
                 continue
             req = SetParameters.Request()
             req.parameters = [param]
