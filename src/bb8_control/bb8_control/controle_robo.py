@@ -68,13 +68,10 @@ SETOR_BANDEIRA = math.radians(
 )  # meia-largura do setor LIDAR amostrado em torno do bearing
 RANGE_FALLBACK = 2.5  # [m] estimativa de distância se o LIDAR não retornar no setor
 NAV_RETRY_MAX = 3  # tentativas de reenvio de goal antes de desistir e re-explorar
-# Bandeira costuma estar fora da área já mapeada pelo LIDAR -> goal cai em célula
-# desconhecida e o Nav2 trava. Tenta o goal cheio e, se inalcançável, vai pegando
-# metades do trajeto até cair numa célula livre e conhecida do global costmap.
+# Bandeira costuma estar fora da área já mapeada pelo LIDAR -> goal cai fora do
+# grid do costmap e o Nav2 trava. Tenta o goal cheio e, se cair fora dos limites
+# do mapa, vai pegando metades do trajeto até voltar pra dentro (incl. desconhecido).
 GOAL_FRACOES = (1.0, 0.5, 0.25, 0.125, 0.0625)
-COSTMAP_LIVRE_MAX = (
-    65  # valor < isto (e >= 0) no global costmap => célula livre/conhecida
-)
 # Se o LIDAR no setor da flag vier mais curto que a estimativa da câmera por mais
 # que isto, há um OBSTÁCULO entre o robô e a flag -> confia na câmera (não no LIDAR).
 OBSTACULO_TOL = 0.5  # [m]
@@ -97,9 +94,9 @@ VS_ALIGN = math.radians(12.0)  # |bearing| p/ considerar centrada e poder avanç
 GRIPPER_EXTEND_TICKS = 15  # ~1.5 s p/ o braço estender antes de avançar
 GRIPPER_CLOSE_TICKS = 15  # ~1.5 s p/ a garra fechar na flag antes de erguer
 GRIPPER_LIFT_TICKS = 15  # ~1.5 s p/ o ombro erguer a flag antes de retornar
-GRAB_DIST = 0.22  # [m] para de avançar quando a flag está ao alcance do braço
+GRAB_DIST = 0.3  # [m] para de avançar quando a flag está ao alcance do braço
 CREEP_VEL = 0.12  # [m/s] avanço lento e final até encostar na flag
-CREEP_MAX_TICKS = 30  # ticks ~3 s máx de avanço final (segurança)
+CREEP_MAX_TICKS = 20  # ticks ~3 s máx de avanço final (segurança)
 
 # Footprint para a checagem de colisão do Nav2:
 #   normal (braço retraído) vs com o braço estendido segurando a flag (+~0.4 m à frente).
@@ -111,8 +108,9 @@ FOOTPRINT_COM_BRACO = "[[0.62, 0.17], [0.62, -0.17], [-0.23, -0.17], [-0.23, 0.1
 STUCK_MIN_MOVE = 0.15  # [m] deslocamento mínimo p/ considerar que está se movendo
 STUCK_MAX_TICKS = 50  # ticks ~5 s quase parado em EXPLORANDO antes de avançar
 AVANCO_MAX_TICKS = 40  # ticks ~4 s indo p/ frente antes de voltar a explorar
+INICIO_PAREDE_TICKS = 30  # ticks ~3 s seguindo parede logo ao inicializar
 AVANCO_VEL = 0.4  # [m/s] velocidade ao avançar à procura de parede
-AVANCO_FRONT_SECTOR = math.radians(25.0)  # meia-largura do setor frontal vigiado
+AVANCO_FRONT_SECTOR = math.radians(20.0)  # meia-largura do setor frontal vigiado
 AVANCO_SAFE_DIST = 0.7  # [m] obstáculo mais perto que isto à frente -> não avança
 AVANCO_GIRO = 0.6  # [rad/s] giro à esquerda quando há obstáculo à frente
 
@@ -153,6 +151,9 @@ class ControleRobo(Node):
         self._pub_explore = self.create_publisher(Bool, "explore/resume", 10)
         # Velocidade direta (só usada no estado BUSCANDO_PAREDE; Nav2 não tem goal lá).
         self._pub_cmd = self.create_publisher(Twist, "/cmd_vel", 10)
+        # Modo "pole": pede ao vision_processor p/ olhar só a metade de baixo da
+        # câmera (mastro), ignorando o painel da bandeira no topo. Ativo em POSICIONANDO.
+        self._pub_pole_mode = self.create_publisher(Bool, "/vision/pole_mode", 10)
 
         # Services do gripper: estende (braço) e grab (fecha a garra).
         self._gripper_extend_cli = self.create_client(SetBool, "/gripper/extend")
@@ -190,6 +191,10 @@ class ControleRobo(Node):
         self._stuck_ref = None  # PoseStamped de referência p/ medir deslocamento
         self._stuck_ticks = 0  # ticks quase parado em EXPLORANDO
         self._avanco_ticks = 0  # ticks indo p/ frente em BUSCANDO_PAREDE
+        self._avanco_budget = (
+            AVANCO_MAX_TICKS  # duração da entrada atual em BUSCANDO_PAREDE
+        )
+        self._inicio_parede_pendente = True  # 1º BUSCANDO_PAREDE = só 3 s de início
         self._posic_ticks = 0  # ticks na sequência de captura (POSICIONANDO_FINAL)
         self._posic_fase = 0  # 0 = estendendo braço, 1 = garra fechando
         self._missao_completa = False
@@ -260,6 +265,8 @@ class ControleRobo(Node):
         self._ao_entrar(novo)
 
     def _ao_entrar(self, estado):
+        # Só olha o mastro (metade de baixo) durante a captura final.
+        self._set_pole_mode(estado == Estado.POSICIONANDO_FINAL)
         if estado == Estado.EXPLORANDO:
             self._set_explore(True)  # libera o m-explore
             self._stuck_ref = None  # reinicia detecção de encravamento
@@ -267,6 +274,12 @@ class ControleRobo(Node):
         elif estado == Estado.BUSCANDO_PAREDE:
             self._set_explore(False)  # pausa o m-explore (libera o /cmd_vel)
             self._avanco_ticks = 0
+            # 1ª vez (logo após inicializar) dura só ~3 s; depois é recovery de ~4 s.
+            if self._inicio_parede_pendente:
+                self._avanco_budget = INICIO_PAREDE_TICKS
+                self._inicio_parede_pendente = False
+            else:
+                self._avanco_budget = AVANCO_MAX_TICKS
         elif estado == Estado.NAVEGANDO_PARA_BANDEIRA:
             self._set_explore(False)  # pausa o m-explore (cancela goal no Nav2)
             self._nav_retries = 0
@@ -308,7 +321,8 @@ class ControleRobo(Node):
                 )
                 return
         self.get_logger().info("[FSM] Nav2 pronto e origem gravada.")
-        self._set_estado(Estado.EXPLORANDO)
+        # Começa seguindo parede por ~3 s antes de liberar a exploração.
+        self._set_estado(Estado.BUSCANDO_PAREDE)
 
     def _exec_explorando(self):
         # O explore_lite cuida da navegação; vigiamos a bandeira...
@@ -348,7 +362,7 @@ class ControleRobo(Node):
             return
         # Tempo de avanço esgotado -> volta a explorar (achou parede nova p/ mapear).
         self._avanco_ticks += 1
-        if self._avanco_ticks > AVANCO_MAX_TICKS:
+        if self._avanco_ticks > self._avanco_budget:
             self._parar()
             self._set_estado(Estado.EXPLORANDO)
             return
@@ -685,8 +699,12 @@ class ControleRobo(Node):
         return pose_map
 
     def _goal_alcancavel(self, pose_map):
-        """True se a pose (frame 'map') cai numa célula livre+conhecida do global
-        costmap. Sem costmap ainda -> True (não bloqueia; comportamento antigo)."""
+        """True se a pose (frame 'map') cai DENTRO dos limites do global costmap.
+
+        Validade = estar dentro do mapa, e SÓ isso. Células desconhecidas (-1)
+        contam como válidas (a flag costuma estar além do que o LIDAR já mapeou);
+        o único caso inválido é o ponto cair fora do tamanho do grid -> aí o
+        chamador encurta o trajeto até voltar pra dentro. Sem costmap -> True."""
         grid = self._costmap
         if grid is None:
             return True
@@ -695,11 +713,8 @@ class ControleRobo(Node):
             return True
         mx = int((pose_map.pose.position.x - info.origin.position.x) / info.resolution)
         my = int((pose_map.pose.position.y - info.origin.position.y) / info.resolution)
-        if mx < 0 or my < 0 or mx >= info.width or my >= info.height:
-            return False  # fora dos limites do mapa
-        val = grid.data[my * info.width + mx]
-        # -1 = desconhecido; >= COSTMAP_LIVRE_MAX = ocupado/inflado.
-        return -1 <= val < COSTMAP_LIVRE_MAX
+        # Único critério de invalidez: fora dos limites do mapa.
+        return 0 <= mx < info.width and 0 <= my < info.height
 
     def _range_no_setor(self, centro_rad, meia_largura_rad):
         """Menor range válido do LIDAR num setor [centro ± meia_largura]. None se vazio."""
@@ -805,6 +820,10 @@ class ControleRobo(Node):
     # ------------------------------------------------------------------ #
     def _set_explore(self, ativar):
         self._pub_explore.publish(Bool(data=bool(ativar)))
+
+    def _set_pole_mode(self, ativar):
+        """Liga/desliga no vision_processor o foco só na metade de baixo (mastro)."""
+        self._pub_pole_mode.publish(Bool(data=bool(ativar)))
 
 
 def main(args=None):

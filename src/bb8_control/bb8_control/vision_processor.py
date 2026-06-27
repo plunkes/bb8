@@ -8,7 +8,7 @@ from geometry_msgs.msg import Pose2D
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
-from std_msgs.msg import Float32, String
+from std_msgs.msg import Bool, Float32, String
 
 
 class VisionProcessorNode(Node):
@@ -37,6 +37,11 @@ class VisionProcessorNode(Node):
         )
 
         self.create_subscription(Image, "/robot_cam/labels_map", self._cb_labels, qos)
+        # Modo "pole": a FSM liga durante POSICIONANDO p/ usar só a metade de baixo
+        # da imagem (mastro), ignorando o painel da bandeira no topo, que puxa o
+        # centroide pra cima e impede o robô de mirar o centro do mastro.
+        self._pole_mode = False
+        self.create_subscription(Bool, "/vision/pole_mode", self._cb_pole_mode, 10)
 
         self._pub_detection = self.create_publisher(
             Pose2D, "/vision/flag_detection", 10
@@ -49,6 +54,13 @@ class VisionProcessorNode(Node):
         self.get_logger().info(
             f"VisionProcessor started | flag_labels={self._flag_labels} HFOV={hfov_deg:.0f}°"
         )
+
+    def _cb_pole_mode(self, msg: Bool):
+        if msg.data != self._pole_mode:
+            self._pole_mode = msg.data
+            self.get_logger().info(
+                f"[vision] pole_mode={'ON (só metade de baixo)' if msg.data else 'OFF'}"
+            )
 
     def _cb_labels(self, msg: Image):
         try:
@@ -63,6 +75,11 @@ class VisionProcessorNode(Node):
             return
 
         flag_mask = np.isin(img, list(self._flag_labels))
+        # No modo pole, zera a metade de cima -> só o mastro (parte de baixo) conta
+        # p/ centroide/bearing, levando o robô ao centro do mastro, não da bandeira.
+        if self._pole_mode:
+            meio = img.shape[0] // 2
+            flag_mask[:meio, :] = False
         area = int(np.sum(flag_mask))
         detected = area >= self._min_pixels
 
