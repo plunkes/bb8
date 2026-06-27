@@ -5,7 +5,10 @@
   <!-- Definicao de Algumas Contantes -->
 
   <xacro:property name="base_width" value="0.31"/> <!-- Largura da base -->
-  <xacro:property name="base_length" value="0.42"/> <!-- Comprimento da base -->
+  <!-- Base QUADRADA (length = width): minimiza o raio circunscrito ao girar no
+       lugar (meia-diagonal 0.31*sqrt2/2 ~ 0.22 m vs 0.26 m da base 0.42x0.31),
+       facilitando viradas de 180 graus em corredores estreitos. -->
+  <xacro:property name="base_length" value="0.31"/> <!-- Comprimento da base -->
   <xacro:property name="base_height" value="0.18"/> <!-- Altura da base -->
 
   <xacro:property name="wheel_radius" value="0.10"/> <!-- Raio da roda -->
@@ -402,7 +405,7 @@
 
   <gazebo>
     <plugin filename="ign_ros2_control-system" name="ign_ros2_control::IgnitionROS2ControlPlugin">
-      <parameters>$(find prm_2026)/config/controller_config.yaml</parameters>
+      <parameters>$(find bb8_control)/config/controller_config.yaml</parameters>
     </plugin>
   </gazebo>
 
