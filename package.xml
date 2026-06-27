@@ -25,6 +25,7 @@
   <exec_depend>tf2_geometry_msgs</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
   <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>nav2_rotation_shim_controller</exec_depend>
   <!-- Exploração de fronteiras: explore_lite vem do m-explore-ros2 (clonado em src/) -->
   <exec_depend>explore_lite</exec_depend>
 

@@ -91,6 +91,8 @@ VS_VEL = 0.25  # [m/s] avanço quando a flag está centrada
 VS_ALIGN = math.radians(12.0)  # |bearing| p/ considerar centrada e poder avançar
 
 # Sequência de captura em POSICIONANDO_FINAL (ticks @ FREQ_CONTROLE=10Hz):
+GRIPPER_ALIGN_TICKS = 5  # ticks consecutivos alinhado antes de estender o braço
+GRIPPER_ALIGN_MAX_TICKS = 30  # ~3 s máx girando p/ alinhar (segurança); falhou -> re-aproxima
 GRIPPER_EXTEND_TICKS = 15  # ~1.5 s p/ o braço estender antes de avançar
 GRIPPER_CLOSE_TICKS = 15  # ~1.5 s p/ a garra fechar na flag antes de erguer
 GRIPPER_LIFT_TICKS = 15  # ~1.5 s p/ o ombro erguer a flag antes de retornar
@@ -100,8 +102,10 @@ CREEP_MAX_TICKS = 20  # ticks ~3 s máx de avanço final (segurança)
 
 # Footprint para a checagem de colisão do Nav2:
 #   normal (braço retraído) vs com o braço estendido segurando a flag (+~0.4 m à frente).
-FOOTPRINT_NORMAL = "[[0.23, 0.17], [0.23, -0.17], [-0.23, -0.17], [-0.23, 0.17]]"
-FOOTPRINT_COM_BRACO = "[[0.62, 0.17], [0.62, -0.17], [-0.23, -0.17], [-0.23, 0.17]]"
+# Base QUADRADA 0.31x0.31 (±0.17 c/ margem). COM_BRACO estende a frente p/ +0.62
+# (braço + flag à frente) mantendo laterais/traseira do quadrado.
+FOOTPRINT_NORMAL = "[[0.17, 0.17], [0.17, -0.17], [-0.17, -0.17], [-0.17, 0.17]]"
+FOOTPRINT_COM_BRACO = "[[0.62, 0.17], [0.62, -0.17], [-0.17, -0.17], [-0.17, 0.17]]"
 
 # "Encravado" em área aberta: explore manda goals pro lugar onde o robô já está
 # (LIDAR sem retorno -> sem fronteira). Detecta pouca movimentação e avança a esmo.
@@ -196,7 +200,8 @@ class ControleRobo(Node):
         )
         self._inicio_parede_pendente = True  # 1º BUSCANDO_PAREDE = só 3 s de início
         self._posic_ticks = 0  # ticks na sequência de captura (POSICIONANDO_FINAL)
-        self._posic_fase = 0  # 0 = estendendo braço, 1 = garra fechando
+        self._posic_fase = 0  # 0=alinhar, 1=estende, 2=avança, 3=fecha garra, 4=ergue
+        self._align_ok_ticks = 0  # ticks consecutivos alinhado na fase de alinhamento
         self._missao_completa = False
         self._pose_origem = None  # PoseStamped em 'map', gravada ao iniciar
 
@@ -291,9 +296,11 @@ class ControleRobo(Node):
         elif estado == Estado.POSICIONANDO_FINAL:
             self._set_explore(False)
             self._posic_ticks = 0
-            self._posic_fase = 0
-            self._gripper_extend(True)  # fase 0: estende o braço (garra aberta)
-            self.get_logger().info("[FSM] Na bandeira — estendendo o braço.")
+            self._posic_fase = 0  # fase 0: ALINHAR (gira no lugar) antes de estender
+            self._align_ok_ticks = 0
+            self.get_logger().info(
+                "[FSM] Na bandeira — alinhando (girando no lugar) antes de estender."
+            )
         elif estado == Estado.RETORNANDO_ORIGEM:
             self._set_explore(False)
             self._nav_retries = 0
@@ -469,19 +476,49 @@ class ControleRobo(Node):
         self._pub_cmd.publish(cmd)
 
     def _exec_posicionando(self):
-        # Captura em 4 fases: (0) estende o braço no nível da flag, (1) avança até
-        # encostar na flag, (2) fecha a garra, (3) ERGUE a flag (ombro 45°) — só
-        # depois disso troca o footprint e retorna à origem. Erguer tira a flag da
-        # frente do robô e o scan_masker mascara o setor frontal (não vira obstáculo).
+        # Captura em 5 fases: (0) ALINHA girando no lugar (bearing->0) ANTES de mexer
+        # o braço, (1) estende o braço no nível da flag, (2) avança até encostar,
+        # (3) fecha a garra, (4) ERGUE a flag (ombro 45°) — só depois disso troca o
+        # footprint e retorna à origem. Erguer tira a flag da frente do robô e o
+        # scan_masker mascara o setor frontal (não vira obstáculo).
         self._posic_ticks += 1
 
-        if self._posic_fase == 0:  # estendendo o braço
-            if self._posic_ticks >= GRIPPER_EXTEND_TICKS:
+        if self._posic_fase == 0:  # ALINHAR: gira no lugar até centrar o pole da flag
+            # Alinhar primeiro reduz captura torta: o braço só estende com a flag
+            # centrada (|bearing| <= FLAG_ALIGN_MAX) de forma estável.
+            bearing = self._flag_bearing
+            if self._bandeira_detectada and abs(bearing) <= FLAG_ALIGN_MAX:
+                self._align_ok_ticks += 1
+            else:
+                self._align_ok_ticks = 0
+            if self._align_ok_ticks >= GRIPPER_ALIGN_TICKS:
+                self._parar()
+                self._gripper_extend(True)  # alinhado: estende o braço (garra aberta)
+                self.get_logger().info("[FSM] Alinhado — estendendo o braço.")
                 self._posic_fase = 1
+                self._posic_ticks = 0
+            elif self._posic_ticks > GRIPPER_ALIGN_MAX_TICKS:
+                # Não centralizou a tempo: não estende torto — re-aproxima.
+                self._parar()
+                self.get_logger().warn(
+                    "[FSM] Não alinhou a tempo p/ estender — re-aproximando."
+                )
+                self._set_estado(Estado.NAVEGANDO_PARA_BANDEIRA)
+            else:
+                cmd = Twist()
+                if self._bandeira_detectada:
+                    w = VS_KP * bearing  # gira no lugar p/ levar o bearing a 0
+                    cmd.angular.z = max(-VS_MAX_W, min(VS_MAX_W, w))
+                self._pub_cmd.publish(cmd)  # linear.x = 0: só gira, não avança
+            return
+
+        if self._posic_fase == 1:  # estendendo o braço
+            if self._posic_ticks >= GRIPPER_EXTEND_TICKS:
+                self._posic_fase = 2
                 self._posic_ticks = 0
             return
 
-        if self._posic_fase == 1:  # centra no pole e avança até a flag ao alcance
+        if self._posic_fase == 2:  # centra no pole e avança até a flag ao alcance
             bearing = self._flag_bearing
             alinhado = self._bandeira_detectada and abs(bearing) <= FLAG_ALIGN_MAX
             front = self._range_no_setor(0.0, AVANCO_FRONT_SECTOR)
@@ -491,7 +528,7 @@ class ControleRobo(Node):
                 self._parar()
                 self._gripper_grab(True)  # fecha a garra na bandeira
                 self.get_logger().info("[FSM] Alinhado e encostado — fechando a garra.")
-                self._posic_fase = 2
+                self._posic_fase = 3
                 self._posic_ticks = 0
             elif self._posic_ticks > CREEP_MAX_TICKS:
                 # Não conseguiu alinhar/encostar a tempo: NÃO pega torto — re-aproxima.
@@ -510,16 +547,16 @@ class ControleRobo(Node):
                 self._pub_cmd.publish(cmd)
             return
 
-        if self._posic_fase == 2:  # garra fechando
+        if self._posic_fase == 3:  # garra fechando
             if self._posic_ticks >= GRIPPER_CLOSE_TICKS:
                 # Garra fechou em volta da flag: agora SIM ergue a flag (ombro 45°).
                 self._gripper_lift(True)
                 self.get_logger().info("[FSM] Garra fechada — erguendo a flag.")
-                self._posic_fase = 3
+                self._posic_fase = 4
                 self._posic_ticks = 0
             return
 
-        if self._posic_fase == 3:  # erguendo a flag (ombro 45°)
+        if self._posic_fase == 4:  # erguendo a flag (ombro 45°)
             if self._posic_ticks >= GRIPPER_LIFT_TICKS:
                 # Flag erguida e fora do FOV frontal (scan_masker mascara): aumenta
                 # o footprint p/ manobrar e retorna à origem.

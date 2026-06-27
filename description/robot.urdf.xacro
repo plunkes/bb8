@@ -72,7 +72,9 @@
       </geometry>
     </collision>
 
-    <xacro:box_inertia m="4.0" w="${base_width}" d="${base_length}" h="${base_height}"/>
+    <!-- Massa reduzida (4.0 -> 2.0 kg): menor inércia rotacional => acelera/freia
+         o giro mais rápido (viradas de 180° mais ágeis com acc_lim_theta atual). -->
+    <xacro:box_inertia m="2.0" w="${base_width}" d="${base_length}" h="${base_height}"/>
   </link>
 
   <!-- Definindo a Base do Robô (base footprint) -->
@@ -446,11 +448,13 @@
       <topic>scan</topic>
       <always_on>true</always_on>
       <visualize>true</visualize>
-      <update_rate>20</update_rate>
+      <!-- LIDAR mais leve p/ arena pequena: 540 amostras @ 15 Hz (era 1080 @ 20 Hz).
+           Menos CPU e custmap mais responsiva; ~0.67° de resolução já é suficiente. -->
+      <update_rate>15</update_rate>
       <ray>
         <scan>
           <horizontal>
-            <samples>1080</samples>
+            <samples>540</samples>
             <resolution>1.000000</resolution>
             <min_angle>0.000000</min_angle>
             <max_angle>6.280000</max_angle>
