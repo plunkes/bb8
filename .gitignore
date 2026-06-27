@@ -1,35 +1,29 @@
-# Created by https://www.toptal.com/developers/gitignore/api/ros2
-# Edit at https://www.toptal.com/developers/gitignore?templates=ros2
+# .gitignore do pacote bb8_control (raiz do repositório Git = este diretório).
+# O repo cobre EXCLUSIVAMENTE o bb8_control. Os outros pacotes do workspace
+# (prm_2026, m-explore-ros2) e os artefatos do colcon (build/install/log) ficam
+# em níveis acima e FORA deste repositório por definição.
 
-### ROS2 ###
+# Artefatos colcon (caso alguém compile dentro deste diretório)
+build/
 install/
 log/
-build/
 
-# Ignore generated docs
-*.dox
-*.wikidoc
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
 
-# eclipse stuff
-.project
-.cproject
-
-# qcreator stuff
-CMakeLists.txt.user
-
-srv/_*.py
-*.pcd
-*.pyc
-qtcreator-*
-*.user
-
-*~
-
-# Emacs
-.#*
-
-# Colcon custom files
+# Colcon ignore markers
 COLCON_IGNORE
 AMENT_IGNORE
 
-# End of https://www.toptal.com/developers/gitignore/api/ros2
+# Editores
+*~
+.#*
+*.user
+CMakeLists.txt.user
+.project
+.cproject
+.vscode/
+.idea/

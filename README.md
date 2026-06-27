@@ -1,101 +1,111 @@
 # bb8_control
 
-Pacote de controle autônomo do robô para a disciplina SSC0712. O robô explora o ambiente seguindo paredes, detecta uma bandeira pela câmera semântica e navega até ela.
+Pacote ROS 2 (Humble) de **controle autônomo de um robô tipo BB8** para
+**exploração de ambiente por fronteiras** e **coleta de uma flag** em simulação
+Gazebo (Ignition).
 
-## Requisitos
+O robô explora autonomamente a arena usando SLAM + Nav2 + exploração de
+fronteiras (`m-explore`), detecta a bandeira por segmentação semântica da câmera
+e a coleta com um braço/gripper, tudo orquestrado por uma FSM.
+
+> **Branch:** baseada em `explore_flag` (stack SLAM + Nav2 + m-explore que
+> substitui o antigo wall-follower reativo). O pacote é **independente**: contém
+> a sua própria descrição do robô (URDF/Xacro), configs de controle, SLAM, Nav2 e
+> exploração, e os launch files. Depende do `prm_2026` apenas para o **mundo e
+> modelos** do Gazebo, e do `m-explore-ros2` para o nó `explore_lite`.
+
+## Conteúdo do pacote
 
 ```
-ROS 2 Humble
-ros-humble-ros-gz-bridge
-ros-humble-ros-gz-sim
-ros-humble-ign-ros2-control
-ros-humble-diff-drive-controller
-ros-humble-joint-state-broadcaster
-ros-humble-position-controllers
-ros-humble-robot-state-publisher
-python3-opencv
-python3-numpy
-ros-humble-cv-bridge
+bb8_control/
+├── bb8_control/            # nós Python
+│   ├── controle_robo.py        # FSM orquestradora
+│   ├── vision_processor.py     # detecção da bandeira (segmentação)
+│   ├── gripper_server.py       # serviço do gripper / postura do braço
+│   ├── scan_masker.py          # mascara setor frontal do LIDAR (/scan_filtered)
+│   └── odom_gt_publisher.py    # odometria ground-truth (TF odom->base_link)
+├── description/robot.urdf.xacro  # descrição do robô (migrada do prm_2026)
+├── config/                       # controller_config, slam_toolbox, nav2, explore
+├── behavior_trees/navigate_no_backup.xml
+├── rviz/rviz_config.rviz
+└── launch/
+    ├── explore_and_catch_flag.launch.py   # MISSÃO COMPLETA (entrypoint)
+    ├── simulation.launch.py               # Gazebo + mundo (prm_2026)
+    ├── spawn_robot.launch.py              # spawn + controladores + pontes + RViz
+    └── robot_state_publisher.launch.py    # RSP (descrição local)
 ```
 
-Além disso é necessário o pacote prm_2026, uma modificação do [pacote da disciplina](https://github.com/matheusbg8/prm_2026).
+## Dependências externas (clonar em `src/`)
 
-Instalar dependências:
+Além das dependências ROS resolvidas via `rosdep` (Nav2, slam_toolbox,
+ros_gz_*, etc.), este pacote precisa de **dois repositórios externos** clonados
+no `src/` do workspace:
+
+| Repositório | Para quê | URL |
+|-------------|----------|-----|
+| `prm_2026` | mundo e modelos do Gazebo | https://github.com/matheusbg8/prm_2026 |
+| `m-explore-ros2` | nó `explore_lite` (exploração de fronteiras) | https://github.com/robo-friends/m-explore-ros2 |
+
+## Instalação
 
 ```bash
-sudo apt install ros-humble-ros-gz-bridge ros-humble-ros-gz-sim ros-humble-ign-ros2-control \
-  ros-humble-diff-drive-controller ros-humble-joint-state-broadcaster \
-  ros-humble-position-controllers ros-humble-cv-bridge \
-  python3-opencv python3-numpy
+# 1. Criar o workspace e o src/
+mkdir -p ~/prm_ws/src
+cd ~/prm_ws/src
+
+# 2. Clonar este pacote
+git clone <URL-deste-repo> bb8_control
+
+# 3. Clonar as dependências externas (mundo + exploração)
+git clone https://github.com/matheusbg8/prm_2026.git
+git clone https://github.com/robo-friends/m-explore-ros2.git
+
+# 4. Instalar dependências ROS
+cd ~/prm_ws
+rosdep install --from-paths src --ignore-src -r -y
+
+# 5. Build
+colcon build --symlink-install
+
+# 6. Source
+source install/local_setup.bash
 ```
 
-## Compilar
+## Como executar
 
 ```bash
-colcon build --packages-select bb8_control
-source install/setup.bash
+cd ~/prm_ws
+colcon build --symlink-install        # build do workspace
+source install/local_setup.bash       # source do ambiente
+
+# Missão completa: Gazebo + robô + SLAM + Nav2 + exploração + visão + FSM
+ros2 launch bb8_control explore_and_catch_flag.launch.py
 ```
 
-## Rodar
+### Launches auxiliares (debug)
 
 ```bash
-ros2 launch bb8_control missao_completa_launch.py
+# Só o simulador + mundo
+ros2 launch bb8_control simulation.launch.py world:=arena_cilindros.sdf
+
+# Só o robô (spawn + controladores + pontes + RViz) — exige a simulação rodando
+ros2 launch bb8_control spawn_robot.launch.py rviz:=true
+
+# Só o robot_state_publisher (descrição/TFs)
+ros2 launch bb8_control robot_state_publisher.launch.py
 ```
 
-## Arquitetura e fluxo de controle
+## Arquitetura (resumo)
 
-O sistema tem dois nodos: `vision_processor` e `controle_robo`.
+- **Árvore de TF:** `map -> odom` (slam_toolbox), `odom -> base_link`
+  (`odom_gt_publisher`, pose ground-truth do Gazebo), `base_link -> sensores`
+  (URDF).
+- **Exploração:** `explore_lite` consome o `/map` cru do SLAM e envia goals
+  `NavigateToPose` ao Nav2; a FSM pausa/retoma via `explore/resume`.
+- **Visão:** `vision_processor` detecta a bandeira na câmera de segmentação
+  (`/robot_cam/labels_map`).
+- **Coleta:** `gripper_server` + juntas do braço (`shoulder_pitch`, `arm_elbow`,
+  `gripper_extension`) no `gripper_controller`.
 
-**vision_processor** lê `/robot_cam/labels_map` (câmera semântica do Gazebo) a cada frame. Para cada pixel, verifica se o label corresponde à bandeira (label 25 = azul). Se a área de pixels detectados for maior que 40, calcula o centroide horizontal e converte para bearing em radianos. Publica em `/vision/flag_detection` (Pose2D: x=centroide, y=área em pixels, theta=1 se detectada) e `/vision/flag_bearing` (Float32).
-
-**controle_robo** roda a 20 Hz e implementa a FSM:
-
-```
-SEGUINDO_PAREDE
-  ├─ sem parede no LIDAR (> 1.8m)  → avança reto a 0.6 m/s
-  ├─ parede à direita detectada     → controle P: ω = -2.2 × (dist_direita - 0.5m)
-  ├─ obstáculo frontal < 0.4m      → para e gira (override de segurança)
-  ├─ célula visitada ≥ 6 vezes     → EVITANDO_LOOP
-  └─ bandeira detectada (≥ 40px)   → DETECTOU_BANDEIRA
-
-DETECTOU_BANDEIRA  (1 tick, apenas para logar a transição)
-  └─ sempre → NAVEGANDO_PARA_BANDEIRA
-
-NAVEGANDO_PARA_BANDEIRA
-  ├─ bandeira perdida por > 10 ticks → SEGUINDO_PAREDE
-  ├─ alinhado (bearing < 0.20 rad) E área ≥ 200px → POSICIONANDO_FINAL
-  ├─ obstáculo frontal < 0.65m      → modo contorno: wall-follow no lado mais livre
-  │    até o caminho desobstruir, depois retoma navegação direta
-  ├─ obstáculo frontal < 0.4m      → para e gira (segurança)
-  ├─ não alinhado → gira: ω = 1.8 × bearing
-  └─ alinhado, caminho livre → avança a 0.6 m/s
-
-POSICIONANDO_FINAL
-  ├─ frente > 0.75m → avança devagar (0.15 m/s) com correção de bearing
-  ├─ frente ≤ 0.75m E bandeira detectada E área ≥ 200px → para, estende braço, "Congratulations"
-  └─ frente ≤ 0.75m E condição não atendida → era cilindro, volta a NAVEGANDO
-
-EVITANDO_LOOP
-  ├─ fase 0: gira esquerda 2.5s
-  └─ fase 1: avança reto 3.5s → SEGUINDO_PAREDE
-```
-
-O braço fica **retraído** durante toda a navegação e só se estende ao confirmar a missão completa. Posições: retraído `[-1.5, -1.5, 0, 0]`, estendido `[0, 0, 0, 0]`. Ordem: `[gripper_extension, arm_elbow, right_gripper_joint, left_gripper_joint]`.
-
-A posição do robô vem de `/odom_gt`, produzido pelo nodo `ground_truth_odometry` do pacote `prm_2026` a partir do ground truth do Gazebo.
-
-## Tópicos relevantes
-
-| Tópico | Tipo | Direção |
-|---|---|---|
-| `/scan` | LaserScan | entrada |
-| `/odom_gt` | Odometry | entrada |
-| `/robot_cam/labels_map` | Image | entrada |
-| `/vision/flag_detection` | Pose2D | saída vision |
-| `/vision/flag_bearing` | Float32 | saída vision |
-| `/cmd_vel` | Twist | saída controle |
-| `/gripper_controller/commands` | Float64MultiArray | saída controle |
-
-## EM DESENVOLVIMENTO
-
-Uma branch do robo que utiliza [frontier exploration](https://github.com/plunkes/bb8/tree/feat/explore_lite) para encontrar a bandeira
+Veja [`troubleshooting_notes.md`](troubleshooting_notes.md) para caveats de
+caminhos, variáveis do Gazebo, pontes e a feature de exploração do m-explore.
