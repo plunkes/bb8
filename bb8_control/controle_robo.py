@@ -97,7 +97,7 @@ GOAL_REFRESH_TICKS = 10  # re-mira o goal de aproximação a cada ~1 s (rastreia
 VS_DIST = 1.0  # [m] abaixo disto, controle visual simples em vez de goals do Nav2
 VS_KP = 1.5  # ganho de giro [rad/s por rad de bearing]
 VS_MAX_W = 1.2  # [rad/s] giro máximo no servo
-VS_VEL = 0.25  # [m/s] avanço quando a flag está centrada
+VS_VEL = 0.30  # [m/s] avanço quando a flag está centrada
 VS_ALIGN = math.radians(12.0)  # |bearing| p/ considerar centrada e poder avançar
 
 # Sequência de captura em POSICIONANDO_FINAL (ticks @ FREQ_CONTROLE=10Hz):
@@ -108,7 +108,7 @@ GRIPPER_CLOSE_TICKS = 10  # ~1.0 s p/ a garra fechar na flag antes de erguer
 GRIPPER_LIFT_TICKS = 10  # ~1.0 s p/ o ombro erguer a flag antes de retornar
 GRAB_DIST = 0.40  # [m] fecha a garra (na_dist): > platô da haste (~0.36), para antes de empurrar
 CREEP_VEL = (
-    0.08  # [m/s] avanço lento e final até encostar na flag (menor = menos overshoot)
+    0.12  # [m/s] avanço final até a haste (na_dist para antes de empurrar)
 )
 CREEP_MAX_TICKS = 20  # ticks ~3 s máx de avanço final (segurança)
 GRAB_DIST_TOL = (
@@ -121,6 +121,7 @@ GRAB_STALL_TICKS = (
     6  # ticks alinhado sem aproximar (rng parou) = haste na palma -> fecha
 )
 VEL_RETORNO = 1.5  # [m/s] velocidade na volta à base (caminho já conhecido)
+RETORNO_OBSTACLE_SCALE = 1.0  # peso de obstáculo (DWB) na volta: mais cuidado c/ a flag
 RE_DIST = 0.55  # [m] folga p/ estender/abrir o braço sem bater no pole (> alcance ~0.4)
 
 # Depósito da flag na plataforma de início (label 28). Volta pela origem gravada,
@@ -133,10 +134,10 @@ DEPOSIT_DROP_DIST = (
     0.4  # [m] distância ao centro (origem) p/ baixar o braço e soltar a flag
 )
 
-# Footprint para a checagem de colisão do Nav2:
-#   normal (braço retraído) vs com o braço estendido segurando a flag (+~0.4 m à frente).
-FOOTPRINT_NORMAL = "[[0.23, 0.17], [0.23, -0.17], [-0.23, -0.17], [-0.23, 0.17]]"
-FOOTPRINT_COM_BRACO = "[[0.62, 0.17], [0.62, -0.17], [-0.23, -0.17], [-0.23, 0.17]]"
+# Footprint do Nav2 ao segurar a flag (trocado em runtime ao pegar): MAIOR p/ cobrir
+# braço + bandeira à frente e dar margem lateral -> Nav2 desvia mais na volta.
+# Inscrito = min(0.20, 0.25) = 0.20; +footprint_padding 0.04 = 0.24 < inflation 0.25.
+FOOTPRINT_COM_BRACO = "[[0.65, 0.20], [0.65, -0.20], [-0.25, -0.20], [-0.25, 0.20]]"
 
 # "Encravado" em área aberta: explore manda goals pro lugar onde o robô já está
 # (LIDAR sem retorno -> sem fronteira). Detecta pouca movimentação e avança a esmo.
@@ -250,6 +251,7 @@ class ControleRobo(Node):
         self._plat_visto = False  # plataforma já avistada no depósito
         self._plat_perda = 0  # ticks sem ver a plataforma após avistá-la
         self._missao_completa = False
+        self._explore_on = None  # último valor publicado em explore/resume (None = nunca)
         self._pose_origem = None  # PoseStamped em 'map', gravada ao iniciar
 
         # Acompanhamento do goal do Nav2
@@ -276,6 +278,7 @@ class ControleRobo(Node):
         global STUCK_MIN_MOVE, STUCK_MAX_TICKS, AVANCO_MAX_TICKS, AVANCO_VEL
         global AVANCO_FRONT_SECTOR, AVANCO_SAFE_DIST, AVANCO_GIRO, FREQ_CONTROLE
         global GRAB_DIST_TOL, VEL_RETORNO, RE_DIST, GRAB_STALL_EPS, GRAB_STALL_TICKS
+        global RETORNO_OBSTACLE_SCALE
         global DEPOSIT_STANDOFF, DEPOSIT_VEL, DEPOSIT_MAX_TICKS, DEPOSIT_PERDA_TICKS
         global DEPOSIT_DROP_DIST
 
@@ -312,6 +315,7 @@ class ControleRobo(Node):
         CREEP_MAX_TICKS = num("creep_max_ticks", CREEP_MAX_TICKS)
         GRAB_DIST_TOL = num("grab_dist_tol", GRAB_DIST_TOL)
         VEL_RETORNO = num("vel_retorno", VEL_RETORNO)
+        RETORNO_OBSTACLE_SCALE = num("retorno_obstacle_scale", RETORNO_OBSTACLE_SCALE)
         RE_DIST = num("re_dist", RE_DIST)
         GRAB_STALL_EPS = num("grab_stall_eps", GRAB_STALL_EPS)
         GRAB_STALL_TICKS = num("grab_stall_ticks", GRAB_STALL_TICKS)
@@ -984,8 +988,9 @@ class ControleRobo(Node):
             cli.call_async(req)
 
     def _set_vel_nav(self, vx):
-        """Ajusta em runtime a velocidade linear máx do controlador Nav2 (DWB).
-        Usado p/ acelerar a volta à base (caminho já conhecido)."""
+        """Reconfigura o controlador Nav2 (DWB) em runtime p/ a volta à base:
+        velocidade linear máx = vx (caminho conhecido) e peso de obstáculo maior
+        (RETORNO_OBSTACLE_SCALE) p/ desviar mais carregando a flag."""
         cli = self._ctrl_param_cli
         if not cli.wait_for_service(timeout_sec=2.0):
             return
@@ -999,6 +1004,7 @@ class ControleRobo(Node):
         req.parameters = [
             Parameter(name="FollowPath.max_vel_x", value=dv(vx)),
             Parameter(name="FollowPath.max_speed_xy", value=dv(vx)),
+            Parameter(name="FollowPath.BaseObstacle.scale", value=dv(RETORNO_OBSTACLE_SCALE)),
         ]
         cli.call_async(req)
 
@@ -1018,7 +1024,14 @@ class ControleRobo(Node):
     # Utilitários
     # ------------------------------------------------------------------ #
     def _set_explore(self, ativar):
-        self._pub_explore.publish(Bool(data=bool(ativar)))
+        # Publica só na MUDANÇA de valor: re-enviar resume=False faz o explore_lite
+        # cancelar os goals do navigate_to_pose — cancelava o goal de retorno à base
+        # recém-enviado (robô não voltava). Idempotente agora.
+        ativar = bool(ativar)
+        if ativar == self._explore_on:
+            return
+        self._explore_on = ativar
+        self._pub_explore.publish(Bool(data=ativar))
 
     def _set_pole_mode(self, ativar):
         """Liga/desliga no vision_processor o foco só na metade de baixo (mastro)."""

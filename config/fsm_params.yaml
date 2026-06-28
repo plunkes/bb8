@@ -27,7 +27,7 @@ controle_robo:
     vs_dist: 1.0 # [m] abaixo disto assume o servo visual
     vs_kp: 1.5 # ganho de giro [rad/s por rad de bearing]
     vs_max_w: 1.2 # [rad/s] giro máximo
-    vs_vel: 0.25 # [m/s] avanço quando centrada
+    vs_vel: 0.30 # [m/s] avanço quando centrada (posiciona p/ pegar mais rápido)
     vs_align_deg: 12.0 # |bearing| p/ considerar centrada
 
     # --- Sequência de captura (ticks @ freq_controle) ---
@@ -35,13 +35,14 @@ controle_robo:
     gripper_close_ticks: 10
     gripper_lift_ticks: 10
     grab_dist: 0.41 # [m] fecha a garra (na_dist): >platô da haste (~0.36) p/ parar ANTES de empurrar
-    creep_vel: 0.08 # [m/s] avanço lento final (menor = menos overshoot)
+    creep_vel: 0.12 # [m/s] avanço final (posiciona p/ pegar mais rápido; na_dist para antes)
     creep_max_ticks: 20 # teto do avanço final (segurança)
     grab_dist_tol: 0.05 # [m] banda em torno de grab_dist (dá ré se passar do ponto)
     grab_stall_eps: 0.01 # [m] progresso mín. de rng p/ não contar como "encostou"
     grab_stall_ticks: 6 # ticks alinhado sem aproximar (rng parou) = haste na palma -> fecha
     re_dist: 0.55 # [m] folga p/ estender/abrir o braço sem bater no pole (>0.4) - fallback maior
     vel_retorno: 1.5 # [m/s] velocidade na volta à base (caminho já conhecido)
+    retorno_obstacle_scale: 1.0 # peso de obstáculo (DWB) na volta: desvia mais com a flag
 
     # --- Depósito da flag na plataforma de início (label 28, visão) ---
     deposit_standoff: 0.5 # [m] para a esta distância da origem (plataforma à frente)

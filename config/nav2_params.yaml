@@ -126,7 +126,7 @@ controller_server:
           GoalDist,
         ]
       BaseObstacle.scale:
-        0.4 # peso de obstáculo maior: desvia melhor de parede (passa menos rente)
+        0.7 # peso de obstáculo maior: desvia melhor de parede (passa menos rente)
         # válidas que passam rente a obstáculos laterais
       PathAlign.scale: 32.0
       PathAlign.forward_point_distance: 0.1
@@ -172,8 +172,8 @@ local_costmap:
         plugin: nav2_costmap_2d::InflationLayer
         # padding maior p/ não raspar; decaimento moderado ainda deixa lane entre
         # cilindros pro robô passar/girar.
-        cost_scaling_factor: 6.0
-        inflation_radius: 0.20
+        cost_scaling_factor: 4.0
+        inflation_radius: 0.27
       always_send_full_costmap: true
 
 global_costmap:
@@ -211,8 +211,8 @@ global_costmap:
         plugin: nav2_costmap_2d::InflationLayer
         # padding maior p/ não raspar; decaimento moderado ainda deixa lane entre
         # cilindros pro robô passar/girar.
-        cost_scaling_factor: 6.0
-        inflation_radius: 0.20
+        cost_scaling_factor: 4.0
+        inflation_radius: 0.27
       always_send_full_costmap: true
 
 planner_server:
