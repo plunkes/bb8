@@ -22,9 +22,9 @@ Ordem de subida (escalonada p/ SLAM/Nav2 prontos antes de explore/FSM):
 """
 
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, TimerAction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from nav2_common.launch import RewrittenYaml
@@ -37,6 +37,7 @@ def generate_launch_description():
     slam_params = PathJoinSubstitution([pkg_ctrl, "config", "slam_toolbox.yaml"])
     nav2_params_src = PathJoinSubstitution([pkg_ctrl, "config", "nav2_params.yaml"])
     explore_params = PathJoinSubstitution([pkg_ctrl, "config", "explore_params.yaml"])
+    fsm_params = PathJoinSubstitution([pkg_ctrl, "config", "fsm_params.yaml"])
 
     # Injeta o caminho da BT customizada (sem ré) no nav2_params em runtime.
     bt_no_backup = PathJoinSubstitution(
@@ -48,12 +49,15 @@ def generate_launch_description():
         convert_types=True,
     )
 
+    # Mundo trocável via CLI: ros2 launch ... world:=arena_classic.sdf
+    world_arg = DeclareLaunchArgument("world", default_value="arena_cilindros.sdf")
+
     # 1. Gazebo + mundo
     simulacao = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([pkg_ctrl, "launch", "simulation.launch.py"])
         ),
-        launch_arguments={"world": "arena_cilindros.sdf"}.items(),
+        launch_arguments={"world": LaunchConfiguration("world")}.items(),
     )
 
     # 2. Robô + controladores + ponte + RViz
@@ -139,12 +143,13 @@ def generate_launch_description():
         package="bb8_control",
         executable="controle_robo",
         name="controle_robo",
-        parameters=[{"use_sim_time": True}],
+        parameters=[fsm_params, {"use_sim_time": True}],
         output="screen",
     )
 
     return LaunchDescription(
         [
+            world_arg,
             simulacao,
             robo,
             gt_odom,

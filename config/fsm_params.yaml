@@ -1,0 +1,51 @@
+# Parâmetros de tuning da FSM (controle_robo). Carregados em runtime via
+# self._carregar_params(); os defaults de módulo no .py são o fallback.
+# Ângulos em GRAUS (sufixo _deg) — convertidos p/ rad no código.
+# Tune aqui sem reeditar código. Constantes estruturais (GOAL_FRACOES,
+# FOOTPRINT_*) seguem no .py por não serem escalares simples.
+controle_robo:
+  ros__parameters:
+    use_sim_time: true
+
+    # --- Detecção / aproximação da bandeira ---
+    flag_detec_min_ticks: 5     # ticks consecutivos detectando antes de navegar (~0.5s)
+    flag_perda_max: 25          # ticks sem ver a flag (navegando) antes de re-explorar
+    stop_dist: 0.30             # [m] parada do goal à frente da flag (braço curto)
+    setor_bandeira_deg: 8.0     # meia-largura do setor LIDAR em torno do bearing
+    range_fallback: 2.5         # [m] distância assumida se o LIDAR não retornar
+    nav_retry_max: 3            # reenvios de goal antes de desistir/re-explorar
+    obstaculo_tol: 0.5          # [m] LIDAR < câmera por +isto => obstáculo no meio
+
+    # --- Critérios p/ ENTRAR em POSICIONANDO_FINAL ---
+    flag_area_min_px: 900       # [px] flag grande na imagem => perto
+    flag_align_max_deg: 6.0     # |bearing| máx p/ "alinhado"
+    flag_range_max: 1.0         # [m] range LIDAR p/ validar proximidade
+    muito_perto_dist: 0.6       # [m] abaixo disto entra só pelo range (área falha)
+    goal_refresh_ticks: 10      # re-mira o goal de aproximação a cada ~1 s
+
+    # --- Servo visual (aproximação final, sem Nav2) ---
+    vs_dist: 0.7                # [m] abaixo disto assume o servo visual
+    vs_kp: 1.5                  # ganho de giro [rad/s por rad de bearing]
+    vs_max_w: 1.2               # [rad/s] giro máximo
+    vs_vel: 0.25                # [m/s] avanço quando centrada
+    vs_align_deg: 12.0          # |bearing| p/ considerar centrada
+
+    # --- Sequência de captura (ticks @ freq_controle) ---
+    gripper_extend_ticks: 10
+    gripper_close_ticks: 10
+    gripper_lift_ticks: 10
+    grab_dist: 0.20             # [m] fecha a garra (range frontal do LIDAR)
+    creep_vel: 0.12             # [m/s] avanço lento final
+    creep_max_ticks: 20         # teto do avanço final (segurança)
+
+    # --- Encravado / busca de parede (recovery) ---
+    stuck_min_move: 0.15        # [m] deslocamento mín. p/ "está se movendo"
+    stuck_max_ticks: 30         # ticks quase parado em EXPLORANDO antes de avançar
+    avanco_max_ticks: 60        # ticks indo p/ frente antes de voltar a explorar
+    avanco_vel: 0.4             # [m/s] avanço à procura de parede
+    avanco_front_sector_deg: 20.0  # meia-largura do setor frontal vigiado
+    avanco_safe_dist: 0.5       # [m] obstáculo à frente mais perto que isto => gira
+    avanco_giro: 0.6            # [rad/s] giro p/ o lado mais aberto
+
+    # --- Laço de controle ---
+    freq_controle: 10           # [Hz] taxa do laço da FSM

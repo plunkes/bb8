@@ -74,10 +74,13 @@ class VisionProcessorNode(Node):
         if img is None:
             return
 
-        flag_mask = np.isin(img, list(self._flag_labels))
+        # Máscara COMPLETA da flag (mastro+painel): usada p/ a ALTURA na distância.
+        flag_mask_full = np.isin(img, list(self._flag_labels))
         # No modo pole, zera a metade de cima -> só o mastro (parte de baixo) conta
         # p/ centroide/bearing, levando o robô ao centro do mastro, não da bandeira.
+        flag_mask = flag_mask_full
         if self._pole_mode:
+            flag_mask = flag_mask_full.copy()
             meio = img.shape[0] // 2
             flag_mask[:meio, :] = False
         area = int(np.sum(flag_mask))
@@ -103,7 +106,12 @@ class VisionProcessorNode(Node):
 
             # Distância por pinhole pela ALTURA aparente do blob (imune a obstáculo
             # que esteja entre o robô e a flag — usa o tamanho, não o range do LIDAR).
-            bbox_h = float(ys.max() - ys.min() + 1)
+            # IMPORTANTE: usa a flag INTEIRA (flag_mask_full), NÃO a máscara do
+            # pole_mode. Senão a meia-imagem corta bbox_h e SUPERESTIMA a distância
+            # (robô chega perto demais antes de fechar a garra). flag_h é a altura
+            # real da flag inteira -> bbox_h também tem que ser da flag inteira.
+            ys_full = np.where(flag_mask_full)[0]
+            bbox_h = float(ys_full.max() - ys_full.min() + 1) if ys_full.size else 0.0
             distance = (
                 self._focal_px * self._flag_h / bbox_h if bbox_h > 0 else 0.0
             )

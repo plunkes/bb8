@@ -62,7 +62,9 @@ FLAG_DETEC_MIN_TICKS = (
     5  # ticks consecutivos de detecção antes de comutar p/ navegação (reage em ~0.5s)
 )
 FLAG_PERDA_MAX = 25  # ticks sem detecção, durante a navegação, antes de re-explorar
-STOP_DIST = 0.30  # [m] parada à frente da flag (braço novo é mais curto: chega mais perto)
+STOP_DIST = (
+    0.30  # [m] parada à frente da flag (braço novo é mais curto: chega mais perto)
+)
 SETOR_BANDEIRA = math.radians(
     8.0
 )  # meia-largura do setor LIDAR amostrado em torno do bearing
@@ -80,6 +82,8 @@ OBSTACULO_TOL = 0.5  # [m]
 FLAG_AREA_MIN_PX = 900  # [px] flag ocupa >= isto na imagem => muito perto
 FLAG_ALIGN_MAX = math.radians(6.0)  # [rad] |bearing| máximo => alinhado com a flag
 FLAG_RANGE_MAX = 1.0  # [m] range do LIDAR até a flag p/ validar proximidade
+MUITO_PERTO_DIST = 0.6  # [m] abaixo disto entra na captura só pelo range (a área da
+#                         imagem falha de tão perto p/ validar proximidade)
 GOAL_REFRESH_TICKS = 10  # re-mira o goal de aproximação a cada ~1 s (rastreia a flag)
 
 # Servo visual (aproximação final): assume o controle quando a flag está perto,
@@ -91,7 +95,9 @@ VS_VEL = 0.25  # [m/s] avanço quando a flag está centrada
 VS_ALIGN = math.radians(12.0)  # |bearing| p/ considerar centrada e poder avançar
 
 # Sequência de captura em POSICIONANDO_FINAL (ticks @ FREQ_CONTROLE=10Hz):
-GRIPPER_EXTEND_TICKS = 10  # ~1.0 s p/ o braço estender (juntas a vel 3.0 chegam a tempo)
+GRIPPER_EXTEND_TICKS = (
+    10  # ~1.0 s p/ o braço estender (juntas a vel 3.0 chegam a tempo)
+)
 GRIPPER_CLOSE_TICKS = 10  # ~1.0 s p/ a garra fechar na flag antes de erguer
 GRIPPER_LIFT_TICKS = 10  # ~1.0 s p/ o ombro erguer a flag antes de retornar
 GRAB_DIST = 0.20  # [m] fecha a garra quando a flag está ao alcance do braço (curto)
@@ -106,11 +112,15 @@ FOOTPRINT_COM_BRACO = "[[0.62, 0.17], [0.62, -0.17], [-0.23, -0.17], [-0.23, 0.1
 # "Encravado" em área aberta: explore manda goals pro lugar onde o robô já está
 # (LIDAR sem retorno -> sem fronteira). Detecta pouca movimentação e avança a esmo.
 STUCK_MIN_MOVE = 0.15  # [m] deslocamento mínimo p/ considerar que está se movendo
-STUCK_MAX_TICKS = 30  # ticks ~3 s quase parado em EXPLORANDO antes de avançar (entra cedo)
-AVANCO_MAX_TICKS = 60  # ticks ~6 s indo p/ frente antes de voltar a explorar (busca mais longa)
+STUCK_MAX_TICKS = (
+    30  # ticks ~3 s quase parado em EXPLORANDO antes de avançar (entra cedo)
+)
+AVANCO_MAX_TICKS = (
+    60  # ticks ~6 s indo p/ frente antes de voltar a explorar (busca mais longa)
+)
 AVANCO_VEL = 0.4  # [m/s] velocidade ao avançar à procura de parede
 AVANCO_FRONT_SECTOR = math.radians(20.0)  # meia-largura do setor frontal vigiado
-AVANCO_SAFE_DIST = 0.7  # [m] obstáculo mais perto que isto à frente -> não avança
+AVANCO_SAFE_DIST = 0.5  # [m] obstáculo mais perto que isto à frente -> não avança
 AVANCO_GIRO = 0.6  # [rad/s] giro à esquerda quando há obstáculo à frente
 
 FREQ_CONTROLE = 10  # [Hz] taxa do laço principal da FSM
@@ -119,6 +129,10 @@ FREQ_CONTROLE = 10  # [Hz] taxa do laço principal da FSM
 class ControleRobo(Node):
     def __init__(self):
         super().__init__("controle_robo")
+
+        # Carrega as constantes de tuning de parâmetros ROS (config/fsm_params.yaml),
+        # sobrescrevendo os defaults de módulo. Antes de qualquer uso (ex.: timer).
+        self._carregar_params()
 
         qos_be = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -206,6 +220,61 @@ class ControleRobo(Node):
         self.create_timer(1.0 / FREQ_CONTROLE, self._loop)
 
         self.get_logger().info("[FSM] Estado inicial: INICIALIZANDO (aguardando Nav2)")
+
+    # ------------------------------------------------------------------ #
+    # Parâmetros (tuning via config/fsm_params.yaml)
+    # ------------------------------------------------------------------ #
+    def _carregar_params(self):
+        """Lê as constantes de tuning de parâmetros ROS e sobrescreve os defaults
+        de módulo. Ângulos expostos em GRAUS (sufixo _deg) e convertidos p/ rad."""
+        global FLAG_DETEC_MIN_TICKS, FLAG_PERDA_MAX, STOP_DIST, SETOR_BANDEIRA
+        global RANGE_FALLBACK, NAV_RETRY_MAX, OBSTACULO_TOL
+        global FLAG_AREA_MIN_PX, FLAG_ALIGN_MAX, FLAG_RANGE_MAX, MUITO_PERTO_DIST
+        global GOAL_REFRESH_TICKS, VS_DIST, VS_KP, VS_MAX_W, VS_VEL, VS_ALIGN
+        global GRIPPER_EXTEND_TICKS, GRIPPER_CLOSE_TICKS, GRIPPER_LIFT_TICKS
+        global GRAB_DIST, CREEP_VEL, CREEP_MAX_TICKS
+        global STUCK_MIN_MOVE, STUCK_MAX_TICKS, AVANCO_MAX_TICKS, AVANCO_VEL
+        global AVANCO_FRONT_SECTOR, AVANCO_SAFE_DIST, AVANCO_GIRO, FREQ_CONTROLE
+
+        def num(name, default):
+            self.declare_parameter(name, default)
+            return self.get_parameter(name).value
+
+        def ang(name, default_rad):
+            self.declare_parameter(name, math.degrees(default_rad))
+            return math.radians(self.get_parameter(name).value)
+
+        FLAG_DETEC_MIN_TICKS = num("flag_detec_min_ticks", FLAG_DETEC_MIN_TICKS)
+        FLAG_PERDA_MAX = num("flag_perda_max", FLAG_PERDA_MAX)
+        STOP_DIST = num("stop_dist", STOP_DIST)
+        SETOR_BANDEIRA = ang("setor_bandeira_deg", SETOR_BANDEIRA)
+        RANGE_FALLBACK = num("range_fallback", RANGE_FALLBACK)
+        NAV_RETRY_MAX = num("nav_retry_max", NAV_RETRY_MAX)
+        OBSTACULO_TOL = num("obstaculo_tol", OBSTACULO_TOL)
+        FLAG_AREA_MIN_PX = num("flag_area_min_px", FLAG_AREA_MIN_PX)
+        FLAG_ALIGN_MAX = ang("flag_align_max_deg", FLAG_ALIGN_MAX)
+        FLAG_RANGE_MAX = num("flag_range_max", FLAG_RANGE_MAX)
+        MUITO_PERTO_DIST = num("muito_perto_dist", MUITO_PERTO_DIST)
+        GOAL_REFRESH_TICKS = num("goal_refresh_ticks", GOAL_REFRESH_TICKS)
+        VS_DIST = num("vs_dist", VS_DIST)
+        VS_KP = num("vs_kp", VS_KP)
+        VS_MAX_W = num("vs_max_w", VS_MAX_W)
+        VS_VEL = num("vs_vel", VS_VEL)
+        VS_ALIGN = ang("vs_align_deg", VS_ALIGN)
+        GRIPPER_EXTEND_TICKS = num("gripper_extend_ticks", GRIPPER_EXTEND_TICKS)
+        GRIPPER_CLOSE_TICKS = num("gripper_close_ticks", GRIPPER_CLOSE_TICKS)
+        GRIPPER_LIFT_TICKS = num("gripper_lift_ticks", GRIPPER_LIFT_TICKS)
+        GRAB_DIST = num("grab_dist", GRAB_DIST)
+        CREEP_VEL = num("creep_vel", CREEP_VEL)
+        CREEP_MAX_TICKS = num("creep_max_ticks", CREEP_MAX_TICKS)
+        STUCK_MIN_MOVE = num("stuck_min_move", STUCK_MIN_MOVE)
+        STUCK_MAX_TICKS = num("stuck_max_ticks", STUCK_MAX_TICKS)
+        AVANCO_MAX_TICKS = num("avanco_max_ticks", AVANCO_MAX_TICKS)
+        AVANCO_VEL = num("avanco_vel", AVANCO_VEL)
+        AVANCO_FRONT_SECTOR = ang("avanco_front_sector_deg", AVANCO_FRONT_SECTOR)
+        AVANCO_SAFE_DIST = num("avanco_safe_dist", AVANCO_SAFE_DIST)
+        AVANCO_GIRO = num("avanco_giro", AVANCO_GIRO)
+        FREQ_CONTROLE = num("freq_controle", FREQ_CONTROLE)
 
     # ------------------------------------------------------------------ #
     # Callbacks de sensores
@@ -359,12 +428,18 @@ class ControleRobo(Node):
             self._parar()
             self._set_estado(Estado.EXPLORANDO)
             return
-        # Desvio: olha o setor frontal. Obstáculo perto -> não avança, gira à esquerda.
+        # Desvio: olha o setor frontal. Obstáculo perto -> não avança; gira para o
+        # LADO MAIS ABERTO (esq vs dir) p/ escapar de caixa, em vez de girar sempre
+        # à esquerda (ficava preso entre dois obstáculos).
         front = self._range_no_setor(0.0, AVANCO_FRONT_SECTOR)
         cmd = Twist()
         if front is not None and front < AVANCO_SAFE_DIST:
+            esq = self._range_no_setor(math.pi / 2, AVANCO_FRONT_SECTOR)
+            dire = self._range_no_setor(-math.pi / 2, AVANCO_FRONT_SECTOR)
+            esq = esq if esq is not None else float("inf")
+            dire = dire if dire is not None else float("inf")
             cmd.linear.x = 0.0
-            cmd.angular.z = AVANCO_GIRO  # vira à esquerda procurando passagem/parede
+            cmd.angular.z = AVANCO_GIRO if esq >= dire else -AVANCO_GIRO
         else:
             cmd.linear.x = AVANCO_VEL
             cmd.angular.z = 0.0
@@ -442,7 +517,7 @@ class ControleRobo(Node):
             return False
         # Perto e grande na imagem, OU muito perto (área pode falhar de tão perto).
         perto = rng <= FLAG_RANGE_MAX and self._flag_area >= FLAG_AREA_MIN_PX
-        muito_perto = rng <= 0.6
+        muito_perto = rng <= MUITO_PERTO_DIST
         return perto or muito_perto
 
     def _servo_visual(self):
