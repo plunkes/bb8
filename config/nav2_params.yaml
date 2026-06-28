@@ -2,8 +2,8 @@
 # SEM amcl e SEM map_server: a localização (map -> odom) e o mapa (/map) vêm do
 # slam_toolbox. Subir via nav2_bringup/navigation_launch.py.
 #
-# Robô: base 0.42 (x) x 0.31 (y) m, rodas separação 0.4 m, raio roda 0.10 m.
-# LIDAR /scan 360°, range 0.12–3.5 m. Nav2 publica /cmd_vel (Twist) que é
+# Robô: base QUADRADA 0.31 x 0.31 m, rodas separação 0.4 m, raio roda 0.10 m.
+# LIDAR /scan 360°, range 0.12–5.0 m. Nav2 publica /cmd_vel (Twist) que é
 # repassado ao diff_drive pelo relay_cmd_vel.
 
 bt_navigator:
@@ -83,27 +83,42 @@ controller_server:
     general_goal_checker:
       stateful: true
       plugin: nav2_controller::SimpleGoalChecker
-      xy_goal_tolerance: 0.25
-      yaw_goal_tolerance: 0.25
+      # Tolerâncias frouxas: metas de EXPLORAÇÃO não exigem pose exata. Maior xy
+      # evita ré/manobra fina ao "encostar" na meta; yaw ~pi ignora a orientação
+      # final (sem giro no fim só p/ bater heading). O alinhamento fino p/ pegar a
+      # flag é feito pela FSM (controle_robo) com /vision/flag_bearing.
+      xy_goal_tolerance: 0.40
+      yaw_goal_tolerance: 3.15
 
-    # DWB – controlador local para diff drive
+    # Rotation Shim + DWB – controlador local para diff drive
     FollowPath:
-      plugin: dwb_core::DWBLocalPlanner
+      # Rotation Shim: gira no lugar p/ alinhar à direção do caminho ANTES de
+      # seguir. Resolve curvas largas/giros de 180° (substitui a feature
+      # orientation_scale removida do m-explore). Delega ao DWB após alinhar.
+      plugin: nav2_rotation_shim_controller::RotationShimController
+      primary_controller: dwb_core::DWBLocalPlanner
+      angular_dist_threshold: 0.785      # >45° desalinhado => gira no lugar primeiro
+      forward_sampling_distance: 0.5
+      rotate_to_heading_angular_vel: 2.5
+      max_angular_accel: 5.0
+      simulate_ahead_time: 1.0
+      rotate_to_goal_heading: false
+      # --- parâmetros do controlador primário (DWB), no mesmo namespace ---
       debug_trajectory_details: true
       min_vel_x: 0.0 # SEM ré: pra mudar de direção, gira no lugar (rodas centradas)
       min_vel_y: 0.0
       max_vel_x: 1.0 # menos corte de curva a alta velocidade (raspava obstáculo)
       max_vel_y: 0.0
-      max_vel_theta: 2.5 # giro mais rápido p/ virar 180° com facilidade
+      max_vel_theta: 3.5 # giro mais rápido p/ virar 180° com facilidade (era 2.5)
       min_speed_xy: 0.0
       max_speed_xy: 1.0
       min_speed_theta: 0.0
       acc_lim_x: 3.0 # acel/decel maiores p/ parar a tempo a 1.2 m/s
       acc_lim_y: 0.0
-      acc_lim_theta: 4.0 # acel angular alta = entra/sai do giro rápido
+      acc_lim_theta: 5.0 # acel angular alta = entra/sai do giro rápido (era 4.0)
       decel_lim_x: -3.0
       decel_lim_y: 0.0
-      decel_lim_theta: -4.0
+      decel_lim_theta: -5.0
       vx_samples: 15
       vy_samples: 5
       vtheta_samples: 15 # amostragem angular mais fina p/ girar em corredor estreito
@@ -111,7 +126,7 @@ controller_server:
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.3
-      xy_goal_tolerance: 0.25
+      xy_goal_tolerance: 0.40
       trans_stopped_velocity: 0.25
       short_circuit_trajectory_evaluation: true
       stateful: true
@@ -150,8 +165,8 @@ local_costmap:
       width: 4
       height: 4
       resolution: 0.05
-      # footprint poligonal real (base 0.42 x 0.31 m) em vez de raio circular
-      footprint: "[[0.23, 0.17], [0.23, -0.17], [-0.23, -0.17], [-0.23, 0.17]]"
+      # footprint poligonal real (base QUADRADA 0.31 x 0.31 m) em vez de raio circular
+      footprint: "[[0.17, 0.17], [0.17, -0.17], [-0.17, -0.17], [-0.17, 0.17]]"
       footprint_padding: 0.05 # margem de colisão menor: menos medo de obstáculo lateral
       plugins: [obstacle_layer, inflation_layer]
       obstacle_layer:
@@ -159,7 +174,7 @@ local_costmap:
         enabled: true
         observation_sources: scan
         scan:
-          topic: /scan_filtered
+          topic: /scan
           max_obstacle_height: 2.0
           clearing: true
           marking: true
@@ -198,7 +213,7 @@ global_costmap:
         enabled: true
         observation_sources: scan
         scan:
-          topic: /scan_filtered
+          topic: /scan
           max_obstacle_height: 2.0
           clearing: true
           marking: true

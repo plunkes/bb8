@@ -10,6 +10,7 @@ import os
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable, ExecuteProcess
+from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import (
     FindExecutable,
     LaunchConfiguration,
@@ -36,6 +37,12 @@ def generate_launch_description():
         default_value="arena_cilindros.sdf",
         description="Nome do arquivo .sdf do mundo (em prm_2026/world)",
     )
+    headless_arg = DeclareLaunchArgument(
+        "headless",
+        default_value="false",
+        description="true = Gazebo SEM GUI (ign gazebo -s), p/ testes/CI sem display",
+    )
+    headless = LaunchConfiguration("headless")
 
     # Diretório de instalação do prm_2026 (provedor do mundo + modelos)
     pkg_prm = FindPackageShare("prm_2026").find("prm_2026")
@@ -43,19 +50,28 @@ def generate_launch_description():
         [pkg_prm, "world", LaunchConfiguration("world")]
     )
 
-    gazebo = ExecuteProcess(
+    # GUI + servidor (uso normal, com display).
+    gazebo_gui = ExecuteProcess(
         cmd=[
-            "ruby",
-            FindExecutable(name="ign"),
-            "gazebo",
-            "-r",
-            "-v",
-            gz_verbosity,
-            world_path,
+            "ruby", FindExecutable(name="ign"), "gazebo",
+            "-r", "-v", gz_verbosity, world_path,
         ],
         output="screen",
         additional_env=gz_env,
         shell=False,
+        condition=UnlessCondition(headless),
+    )
+    # Servidor apenas (-s): sem GUI. Evita que a GUI derrube o Gazebo quando não
+    # há display (a GUI falha em criar a janela GL e mata o servidor junto).
+    gazebo_server = ExecuteProcess(
+        cmd=[
+            "ruby", FindExecutable(name="ign"), "gazebo", "-s",
+            "-r", "-v", gz_verbosity, world_path,
+        ],
+        output="screen",
+        additional_env=gz_env,
+        shell=False,
+        condition=IfCondition(headless),
     )
 
     # Modelos personalizados do mundo: IGN_GAZEBO_RESOURCE_PATH -> prm_2026
@@ -77,4 +93,6 @@ def generate_launch_description():
         output="screen",
     )
 
-    return LaunchDescription([world_file_arg, gz_set_env, world_bridge, gazebo])
+    return LaunchDescription(
+        [world_file_arg, headless_arg, gz_set_env, world_bridge, gazebo_gui, gazebo_server]
+    )

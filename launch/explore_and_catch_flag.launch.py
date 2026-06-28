@@ -12,7 +12,6 @@ Ordem de subida (escalonada p/ SLAM/Nav2 prontos antes de explore/FSM):
   1. simulation        – Gazebo + mundo (prm_2026) + /sky_cam + /clock
   2. spawn_robot       – RSP, spawn, controladores, ponte dos sensores, RViz
   3. odom_gt_publisher – TF 'odom' -> base_link (nó do bb8_control)
-  4. scan_masker       – mascara o setor frontal do LIDAR quando o braço sobe
   5. slam_toolbox      – mapeamento online (/map, TF map->odom)
   6. nav2              – navigation_launch.py
   7. explore_lite      – exploração de fronteiras (FSM controla via explore/resume)
@@ -22,9 +21,9 @@ Ordem de subida (escalonada p/ SLAM/Nav2 prontos antes de explore/FSM):
 """
 
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, TimerAction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from nav2_common.launch import RewrittenYaml
@@ -33,6 +32,12 @@ from nav2_common.launch import RewrittenYaml
 def generate_launch_description():
     pkg_ctrl = FindPackageShare("bb8_control")
     pkg_nav2 = FindPackageShare("nav2_bringup")
+
+    headless_arg = DeclareLaunchArgument(
+        "headless", default_value="false",
+        description="true = Gazebo sem GUI (-s) e sem RViz; p/ testes/CI sem display",
+    )
+    headless = LaunchConfiguration("headless")
 
     slam_params = PathJoinSubstitution([pkg_ctrl, "config", "slam_toolbox.yaml"])
     nav2_params_src = PathJoinSubstitution([pkg_ctrl, "config", "nav2_params.yaml"])
@@ -53,14 +58,18 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([pkg_ctrl, "launch", "simulation.launch.py"])
         ),
-        launch_arguments={"world": "arena_cilindros.sdf"}.items(),
+        launch_arguments={
+            "world": "arena_cilindros.sdf",
+            "headless": headless,
+        }.items(),
     )
 
-    # 2. Robô + controladores + ponte + RViz
+    # 2. Robô + controladores + ponte + RViz (RViz desligado em headless)
     robo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([pkg_ctrl, "launch", "spawn_robot.launch.py"])
         ),
+        launch_arguments={"rviz": PythonExpression(["'false' if '", headless, "'=='true' else 'true'"])}.items(),
     )
 
     # 3. Odometria ground-truth (TF odom -> base_link) — nó do bb8_control
@@ -69,15 +78,6 @@ def generate_launch_description():
         executable="odom_gt_publisher",
         name="ground_truth_odometry",
         parameters=[{"use_sim_time": True, "odom_frame": "odom"}],
-        output="screen",
-    )
-
-    # 4. Filtro dinâmico do LIDAR (publica /scan_filtered p/ SLAM e Nav2)
-    scan_masker = Node(
-        package="bb8_control",
-        executable="scan_masker",
-        name="scan_masker",
-        parameters=[{"use_sim_time": True}],
         output="screen",
     )
 
@@ -141,10 +141,10 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            headless_arg,
             simulacao,
             robo,
             gt_odom,
-            TimerAction(period=5.0, actions=[scan_masker]),
             TimerAction(period=6.0, actions=[slam]),
             TimerAction(period=9.0, actions=[nav2]),
             TimerAction(period=8.0, actions=[gripper]),

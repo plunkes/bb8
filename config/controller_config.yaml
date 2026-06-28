@@ -13,10 +13,9 @@ controller_manager:
 
 gripper_controller:
   ros__parameters:
+    # Braço simplificado p/ junta única (shoulder_pitch) + 2 dedos.
     joints:
       - shoulder_pitch
-      - gripper_extension
-      - arm_elbow
       - right_gripper_joint
       - left_gripper_joint
 
@@ -65,9 +64,9 @@ diff_drive_base_controller:
     angular.z.has_velocity_limits: true
     angular.z.has_acceleration_limits: true
     angular.z.has_jerk_limits: false
-    angular.z.max_velocity: 2.5
-    angular.z.min_velocity: -2.5
-    angular.z.max_acceleration: 2.5
-    angular.z.min_acceleration: -2.5
+    angular.z.max_velocity: 4.0   # giro mais rápido (era 2.5)
+    angular.z.min_velocity: -4.0
+    angular.z.max_acceleration: 5.0  # entra/sai do giro mais rápido (era 2.5)
+    angular.z.min_acceleration: -5.0
     angular.z.max_jerk: 0.0
     angular.z.min_jerk: 0.0
