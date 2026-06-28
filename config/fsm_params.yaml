@@ -10,7 +10,7 @@ controle_robo:
     # --- Detecção / aproximação da bandeira ---
     flag_detec_min_ticks: 5     # ticks consecutivos detectando antes de navegar (~0.5s)
     flag_perda_max: 25          # ticks sem ver a flag (navegando) antes de re-explorar
-    stop_dist: 0.30             # [m] parada do goal à frente da flag (braço curto)
+    stop_dist: 0.40             # [m] parada do goal: ~alcance do braço (0.39) p/ não atropelar a haste
     setor_bandeira_deg: 8.0     # meia-largura do setor LIDAR em torno do bearing
     range_fallback: 2.5         # [m] distância assumida se o LIDAR não retornar
     nav_retry_max: 3            # reenvios de goal antes de desistir/re-explorar
@@ -34,7 +34,7 @@ controle_robo:
     gripper_extend_ticks: 10
     gripper_close_ticks: 10
     gripper_lift_ticks: 10
-    grab_dist: 0.20             # [m] fecha a garra (range frontal do LIDAR)
+    grab_dist: 0.38             # [m] fecha a garra: front~haste (dedos a ~0.39 do centro, haste raio 0.03)
     creep_vel: 0.12             # [m/s] avanço lento final
     creep_max_ticks: 20         # teto do avanço final (segurança)
 

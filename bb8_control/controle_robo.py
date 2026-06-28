@@ -63,7 +63,7 @@ FLAG_DETEC_MIN_TICKS = (
 )
 FLAG_PERDA_MAX = 25  # ticks sem detecção, durante a navegação, antes de re-explorar
 STOP_DIST = (
-    0.30  # [m] parada à frente da flag (braço novo é mais curto: chega mais perto)
+    0.40  # [m] parada à frente da flag (~alcance do braço 0.39: não atropela a haste)
 )
 SETOR_BANDEIRA = math.radians(
     8.0
@@ -100,7 +100,7 @@ GRIPPER_EXTEND_TICKS = (
 )
 GRIPPER_CLOSE_TICKS = 10  # ~1.0 s p/ a garra fechar na flag antes de erguer
 GRIPPER_LIFT_TICKS = 10  # ~1.0 s p/ o ombro erguer a flag antes de retornar
-GRAB_DIST = 0.20  # [m] fecha a garra quando a flag está ao alcance do braço (curto)
+GRAB_DIST = 0.38  # [m] fecha a garra: front~haste (dedos a ~0.39 do centro)
 CREEP_VEL = 0.12  # [m/s] avanço lento e final até encostar na flag
 CREEP_MAX_TICKS = 20  # ticks ~3 s máx de avanço final (segurança)
 
