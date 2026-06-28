@@ -122,6 +122,12 @@ GRAB_STALL_TICKS = (
 )
 VEL_RETORNO = 1.5  # [m/s] velocidade na volta à base (caminho já conhecido)
 RETORNO_OBSTACLE_SCALE = 1.0  # peso de obstáculo (DWB) na volta: mais cuidado c/ a flag
+
+# Fallback de captura: depois de erguer, confirma a flag NA MÃO pela câmera (com a
+# flag presa, ela aparece grande na imagem). Se não confirmar, re-tenta o grab.
+VERIF_AREA_MIN = 800  # [px] área mínima da flag na câmera p/ confirmar que está na mão
+VERIF_MAX_TICKS = 15  # ticks ~1.5 s esperando confirmar a flag na mão
+GRAB_ATTEMPTS_MAX = 3  # re-grabs antes de seguir p/ a base assim mesmo (best effort)
 RE_DIST = 0.55  # [m] folga p/ estender/abrir o braço sem bater no pole (> alcance ~0.4)
 
 # Depósito da flag na plataforma de início (label 28). Volta pela origem gravada,
@@ -134,10 +140,11 @@ DEPOSIT_DROP_DIST = (
     0.4  # [m] distância ao centro (origem) p/ baixar o braço e soltar a flag
 )
 
-# Footprint do Nav2 ao segurar a flag (trocado em runtime ao pegar): MAIOR p/ cobrir
-# braço + bandeira à frente e dar margem lateral -> Nav2 desvia mais na volta.
-# Inscrito = min(0.20, 0.25) = 0.20; +footprint_padding 0.04 = 0.24 < inflation 0.25.
-FOOTPRINT_COM_BRACO = "[[0.65, 0.20], [0.65, -0.20], [-0.25, -0.20], [-0.25, 0.20]]"
+# Footprint do Nav2 ao segurar a flag (trocado em runtime ao pegar): GRANDE — cobre o
+# braço levantado (reto, 45°) + a bandeira à frente, com folga lateral, p/ o Nav2
+# desviar com margem na volta. Inscrito = min(0.22, 0.25) = 0.22; +footprint_padding
+# 0.04 = 0.26 < inflation (0.27 local) -> sem warning.
+FOOTPRINT_COM_BRACO = "[[0.70, 0.22], [0.70, -0.22], [-0.25, -0.22], [-0.25, 0.22]]"
 
 # "Encravado" em área aberta: explore manda goals pro lugar onde o robô já está
 # (LIDAR sem retorno -> sem fronteira). Detecta pouca movimentação e avança a esmo.
@@ -248,6 +255,7 @@ class ControleRobo(Node):
         self._braco_estendido = False  # braço já estendido nesta captura
         self._grab_rng_min = None  # menor rng à flag visto na aproximação final
         self._grab_stall = 0  # ticks alinhado sem aproximar mais (encostou na haste)
+        self._grab_attempts = 0  # tentativas de grab (fallback de verificação)
         self._plat_visto = False  # plataforma já avistada no depósito
         self._plat_perda = 0  # ticks sem ver a plataforma após avistá-la
         self._missao_completa = False
@@ -278,7 +286,7 @@ class ControleRobo(Node):
         global STUCK_MIN_MOVE, STUCK_MAX_TICKS, AVANCO_MAX_TICKS, AVANCO_VEL
         global AVANCO_FRONT_SECTOR, AVANCO_SAFE_DIST, AVANCO_GIRO, FREQ_CONTROLE
         global GRAB_DIST_TOL, VEL_RETORNO, RE_DIST, GRAB_STALL_EPS, GRAB_STALL_TICKS
-        global RETORNO_OBSTACLE_SCALE
+        global RETORNO_OBSTACLE_SCALE, VERIF_AREA_MIN, VERIF_MAX_TICKS, GRAB_ATTEMPTS_MAX
         global DEPOSIT_STANDOFF, DEPOSIT_VEL, DEPOSIT_MAX_TICKS, DEPOSIT_PERDA_TICKS
         global DEPOSIT_DROP_DIST
 
@@ -316,6 +324,9 @@ class ControleRobo(Node):
         GRAB_DIST_TOL = num("grab_dist_tol", GRAB_DIST_TOL)
         VEL_RETORNO = num("vel_retorno", VEL_RETORNO)
         RETORNO_OBSTACLE_SCALE = num("retorno_obstacle_scale", RETORNO_OBSTACLE_SCALE)
+        VERIF_AREA_MIN = num("verif_area_min", VERIF_AREA_MIN)
+        VERIF_MAX_TICKS = num("verif_max_ticks", VERIF_MAX_TICKS)
+        GRAB_ATTEMPTS_MAX = num("grab_attempts_max", GRAB_ATTEMPTS_MAX)
         RE_DIST = num("re_dist", RE_DIST)
         GRAB_STALL_EPS = num("grab_stall_eps", GRAB_STALL_EPS)
         GRAB_STALL_TICKS = num("grab_stall_ticks", GRAB_STALL_TICKS)
@@ -399,6 +410,7 @@ class ControleRobo(Node):
             self._set_explore(True)  # libera o m-explore
             self._stuck_ref = None  # reinicia detecção de encravamento
             self._stuck_ticks = 0
+            self._grab_attempts = 0  # nova caça à flag: zera as tentativas de grab
         elif estado == Estado.BUSCANDO_PAREDE:
             self._set_explore(False)  # pausa o m-explore (libera o /cmd_vel)
             self._avanco_ticks = 0
@@ -599,11 +611,12 @@ class ControleRobo(Node):
         return cmd
 
     def _exec_posicionando(self):
-        # Captura em 4 fases:
+        # Captura em 5 fases:
         #   0 = recua até a folga (RE_DIST) e ESTENDE o braço (garra aberta);
         #   1 = avança/centra na haste e FECHA a garra (na_dist OU encostou);
         #   2 = espera a garra fechar e ERGUE a flag (ombro 45°);
-        #   3 = espera erguer, aumenta o footprint e vai p/ RETORNANDO_ORIGEM.
+        #   3 = espera erguer; volta a câmera p/ a imagem inteira (conferir);
+        #   4 = CONFIRMA a flag na mão (grande na câmera) -> RETORNANDO; senão re-tenta.
         self._posic_ticks += 1
 
         if self._posic_fase == 0:  # recua até a FOLGA (RE_DIST) e estende o braço
@@ -685,10 +698,29 @@ class ControleRobo(Node):
 
         if self._posic_fase == 3:  # erguendo a flag (ombro 45°)
             if self._posic_ticks >= GRIPPER_LIFT_TICKS:
-                # Flag erguida e fora do FOV frontal (scan_masker mascara): aumenta
-                # o footprint p/ manobrar e retorna à origem.
+                self._set_pole_mode(False)  # imagem inteira p/ conferir a flag na mão
+                self._posic_fase = 4
+                self._posic_ticks = 0
+            return
+
+        if self._posic_fase == 4:  # FALLBACK: confirma a flag NA MÃO (grande na câmera)
+            if self._bandeira_detectada and self._flag_area >= VERIF_AREA_MIN:
+                # Flag presa aparece grande na câmera: aumenta o footprint e volta.
+                self._grab_attempts = 0
                 self._set_footprint(FOOTPRINT_COM_BRACO)
                 self._set_estado(Estado.RETORNANDO_ORIGEM)
+            elif self._posic_ticks >= VERIF_MAX_TICKS:
+                self._grab_attempts += 1
+                if self._grab_attempts < GRAB_ATTEMPTS_MAX:
+                    # Não confirmou -> grab falhou: abre a garra, abaixa e re-aproxima.
+                    self._gripper_grab(False)
+                    self._gripper_lift(False)
+                    self._set_estado(Estado.NAVEGANDO_PARA_BANDEIRA)
+                else:
+                    # Esgotou tentativas: segue p/ a base assim mesmo (best effort).
+                    self._set_footprint(FOOTPRINT_COM_BRACO)
+                    self._set_estado(Estado.RETORNANDO_ORIGEM)
+            return
 
     def _exec_retornando(self):
         if self._nav_status == "sucesso":

@@ -34,7 +34,7 @@ from std_srvs.srv import SetBool
 ARM_RETRAIDO = [0.0, -1.5708, -1.5708, 0.0, 0.0]      # ombro baixo, braço recolhido a -90° + garra FECHADA (início)
 ARM_ESTENDIDO_ABERTO = [0.0, 0.0, 0.0, -0.06, 0.06]   # ombro BAIXO, braço a 0° = diretamente à frente, garra ABERTA
 ARM_ESTENDIDO_FECHADO = [0.0, 0.0, 0.0, 0.0, 0.0]     # ombro BAIXO, à frente, garra FECHADA (pega flag)
-ARM_LEVANTADO_FECHADO = [0.785398, 0.0, 0.0, 0.0, 0.0]  # ombro 45°, garra FECHADA (ergue a flag)
+ARM_LEVANTADO_FECHADO = [0.785398, 0.0, 0.0, 0.0, 0.0]  # ombro 45° (só levanta, braço reto), garra FECHADA (ergue a flag)
 
 
 class GripperServer(Node):

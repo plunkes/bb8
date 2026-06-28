@@ -44,6 +44,11 @@ controle_robo:
     vel_retorno: 1.5 # [m/s] velocidade na volta à base (caminho já conhecido)
     retorno_obstacle_scale: 1.0 # peso de obstáculo (DWB) na volta: desvia mais com a flag
 
+    # --- Fallback: confirma a flag NA MÃO pela câmera após erguer (senão re-tenta) ---
+    verif_area_min: 800 # [px] área mínima da flag na câmera p/ confirmar que está na mão
+    verif_max_ticks: 15 # ticks (~1.5 s) esperando confirmar a flag na mão
+    grab_attempts_max: 3 # re-grabs antes de seguir p/ a base assim mesmo (best effort)
+
     # --- Depósito da flag na plataforma de início (label 28, visão) ---
     deposit_standoff: 0.5 # [m] para a esta distância da origem (plataforma à frente)
     deposit_vel: 0.2 # [m/s] avanço lento centrando na plataforma
