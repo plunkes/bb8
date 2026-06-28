@@ -10,7 +10,7 @@ controle_robo:
     # --- Detecção / aproximação da bandeira ---
     flag_detec_min_ticks: 5 # ticks consecutivos detectando antes de navegar (~0.5s)
     flag_perda_max: 25 # ticks sem ver a flag (navegando) antes de re-explorar
-    stop_dist: 0.26 # [m] parada do goal: ~alcance do braço (0.39) p/ não atropelar a haste
+    stop_dist: 0.29 # [m] parada do goal: ~alcance do braço (0.39) p/ não atropelar a haste
     setor_bandeira_deg: 8.0 # meia-largura do setor LIDAR em torno do bearing
     range_fallback: 2.5 # [m] distância assumida se o LIDAR não retornar
     nav_retry_max: 3 # reenvios de goal antes de desistir/re-explorar
@@ -19,8 +19,8 @@ controle_robo:
     # --- Critérios p/ ENTRAR em POSICIONANDO_FINAL ---
     flag_area_min_px: 900 # [px] flag grande na imagem => perto
     flag_align_max_deg: 6.0 # |bearing| máx p/ "alinhado"
-    flag_range_max: 1.0 # [m] range LIDAR p/ validar proximidade
-    muito_perto_dist: 0.4 # [m] abaixo disto entra só pelo range (área falha)
+    flag_range_max: 0.8 # [m] range LIDAR p/ validar proximidade
+    muito_perto_dist: 0.5 # [m] abaixo disto entra só pelo range (área falha)
     goal_refresh_ticks: 10 # re-mira o goal de aproximação a cada ~1 s
 
     # --- Servo visual (aproximação final, sem Nav2) ---
@@ -34,11 +34,13 @@ controle_robo:
     gripper_extend_ticks: 10
     gripper_close_ticks: 10
     gripper_lift_ticks: 10
-    grab_dist: 0.38 # [m] fecha a garra: front~haste (dedos a ~0.39 do centro, haste raio 0.03)
-    creep_vel: 0.12 # [m/s] avanço lento final
+    grab_dist: 0.40 # [m] fecha a garra (na_dist): >platô da haste (~0.36) p/ parar ANTES de empurrar
+    creep_vel: 0.08 # [m/s] avanço lento final (menor = menos overshoot)
     creep_max_ticks: 20 # teto do avanço final (segurança)
     grab_dist_tol: 0.05 # [m] banda em torno de grab_dist (dá ré se passar do ponto)
-    re_dist: 0.45 # [m] folga p/ estender/abrir o braço sem bater no pole (>0.4)
+    grab_stall_eps: 0.01 # [m] progresso mín. de rng p/ não contar como "encostou"
+    grab_stall_ticks: 6 # ticks alinhado sem aproximar (rng parou) = haste na palma -> fecha
+    re_dist: 0.55 # [m] folga p/ estender/abrir o braço sem bater no pole (>0.4) - fallback maior
     vel_retorno: 1.5 # [m/s] velocidade na volta à base (caminho já conhecido)
 
     # --- Depósito da flag na plataforma de início (label 28, visão) ---
@@ -46,6 +48,7 @@ controle_robo:
     deposit_vel: 0.2 # [m/s] avanço lento centrando na plataforma
     deposit_max_ticks: 60 # ticks ~8 s máx (fallback) p/ subir na plataforma
     deposit_perda_ticks: 8 # ticks sem ver a plataforma (após vê-la) = está por cima
+    deposit_drop_dist: 0.4 # [m] distância ao centro (origem) p/ baixar o braço e soltar
 
     # --- Encravado / busca de parede (recovery) ---
     stuck_min_move: 0.15 # [m] deslocamento mín. p/ "está se movendo"

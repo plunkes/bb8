@@ -98,7 +98,10 @@ class VisionProcessorNode(Node):
         # No modo pole, zera a metade de cima -> só o mastro (parte de baixo) conta
         # p/ centroide/bearing, levando o robô ao centro do mastro, não da bandeira.
         flag_mask = flag_mask_full
-        if self._pole_mode:
+        # METADE DE BAIXO só: no pole_mode (flag) ignora o painel alto; no deposit_mode
+        # a plataforma está no CHÃO (parte de baixo) e a flag erguida que o robô carrega
+        # fica na frente/alto -> cortar o topo limpa o centroide/bearing do alvo.
+        if self._pole_mode or self._deposit_mode:
             flag_mask = flag_mask_full.copy()
             meio = img.shape[0] // 2
             flag_mask[:meio, :] = False

@@ -102,12 +102,14 @@ GRIPPER_EXTEND_TICKS = (
 )
 GRIPPER_CLOSE_TICKS = 10  # ~1.0 s p/ a garra fechar na flag antes de erguer
 GRIPPER_LIFT_TICKS = 10  # ~1.0 s p/ o ombro erguer a flag antes de retornar
-GRAB_DIST = 0.38  # [m] fecha a garra: front~haste (dedos a ~0.39 do centro)
-CREEP_VEL = 0.12  # [m/s] avanço lento e final até encostar na flag
+GRAB_DIST = 0.40  # [m] fecha a garra (na_dist): > platô da haste (~0.36), para antes de empurrar
+CREEP_VEL = 0.08  # [m/s] avanço lento e final até encostar na flag (menor = menos overshoot)
 CREEP_MAX_TICKS = 20  # ticks ~3 s máx de avanço final (segurança)
 GRAB_DIST_TOL = 0.05  # [m] banda em torno de GRAB_DIST p/ "na distância" (dá ré se passar)
+GRAB_STALL_EPS = 0.01  # [m] progresso mín. de rng p/ não contar como "encostou" na haste
+GRAB_STALL_TICKS = 6  # ticks alinhado sem aproximar (rng parou) = haste na palma -> fecha
 VEL_RETORNO = 1.5  # [m/s] velocidade na volta à base (caminho já conhecido)
-RE_DIST = 0.45  # [m] folga p/ estender/abrir o braço sem bater no pole (> alcance ~0.4)
+RE_DIST = 0.55  # [m] folga p/ estender/abrir o braço sem bater no pole (> alcance ~0.4)
 
 # Depósito da flag na plataforma de início (label 28). Volta pela origem gravada,
 # mas para a DEPOSIT_STANDOFF dela e usa a VISÃO p/ centrar e subir na plataforma.
@@ -115,6 +117,7 @@ DEPOSIT_STANDOFF = 1.0  # [m] para a esta distância da origem (plataforma à fr
 DEPOSIT_VEL = 0.15  # [m/s] avanço lento centrando na plataforma
 DEPOSIT_MAX_TICKS = 80  # ticks ~8 s máx procurando/subindo na plataforma (fallback)
 DEPOSIT_PERDA_TICKS = 8  # ticks sem ver a plataforma (após vê-la) = está por cima dela
+DEPOSIT_DROP_DIST = 0.4  # [m] distância ao centro (origem) p/ baixar o braço e soltar a flag
 
 # Footprint para a checagem de colisão do Nav2:
 #   normal (braço retraído) vs com o braço estendido segurando a flag (+~0.4 m à frente).
@@ -228,6 +231,8 @@ class ControleRobo(Node):
         self._posic_ticks = 0  # ticks na sequência de captura (POSICIONANDO_FINAL)
         self._posic_fase = 0  # 0 = folga+estende braço, 1 = posiciona+fecha garra
         self._braco_estendido = False  # braço já estendido nesta captura
+        self._grab_rng_min = None  # menor rng à flag visto na aproximação final
+        self._grab_stall = 0  # ticks alinhado sem aproximar mais (encostou na haste)
         self._plat_visto = False  # plataforma já avistada no depósito
         self._plat_perda = 0  # ticks sem ver a plataforma após avistá-la
         self._missao_completa = False
@@ -256,8 +261,9 @@ class ControleRobo(Node):
         global GRAB_DIST, CREEP_VEL, CREEP_MAX_TICKS
         global STUCK_MIN_MOVE, STUCK_MAX_TICKS, AVANCO_MAX_TICKS, AVANCO_VEL
         global AVANCO_FRONT_SECTOR, AVANCO_SAFE_DIST, AVANCO_GIRO, FREQ_CONTROLE
-        global GRAB_DIST_TOL, VEL_RETORNO, RE_DIST
+        global GRAB_DIST_TOL, VEL_RETORNO, RE_DIST, GRAB_STALL_EPS, GRAB_STALL_TICKS
         global DEPOSIT_STANDOFF, DEPOSIT_VEL, DEPOSIT_MAX_TICKS, DEPOSIT_PERDA_TICKS
+        global DEPOSIT_DROP_DIST
 
         def num(name, default):
             self.declare_parameter(name, default)
@@ -293,10 +299,13 @@ class ControleRobo(Node):
         GRAB_DIST_TOL = num("grab_dist_tol", GRAB_DIST_TOL)
         VEL_RETORNO = num("vel_retorno", VEL_RETORNO)
         RE_DIST = num("re_dist", RE_DIST)
+        GRAB_STALL_EPS = num("grab_stall_eps", GRAB_STALL_EPS)
+        GRAB_STALL_TICKS = num("grab_stall_ticks", GRAB_STALL_TICKS)
         DEPOSIT_STANDOFF = num("deposit_standoff", DEPOSIT_STANDOFF)
         DEPOSIT_VEL = num("deposit_vel", DEPOSIT_VEL)
         DEPOSIT_MAX_TICKS = num("deposit_max_ticks", DEPOSIT_MAX_TICKS)
         DEPOSIT_PERDA_TICKS = num("deposit_perda_ticks", DEPOSIT_PERDA_TICKS)
+        DEPOSIT_DROP_DIST = num("deposit_drop_dist", DEPOSIT_DROP_DIST)
         STUCK_MIN_MOVE = num("stuck_min_move", STUCK_MIN_MOVE)
         STUCK_MAX_TICKS = num("stuck_max_ticks", STUCK_MAX_TICKS)
         AVANCO_MAX_TICKS = num("avanco_max_ticks", AVANCO_MAX_TICKS)
@@ -389,6 +398,8 @@ class ControleRobo(Node):
             self._posic_ticks = 0
             self._posic_fase = 0
             self._braco_estendido = False
+            self._grab_rng_min = None
+            self._grab_stall = 0
             self.get_logger().info(
                 "[FSM] Na bandeira — recuando p/ a folga antes de estender o braço."
             )
@@ -581,8 +592,8 @@ class ControleRobo(Node):
             # é tratada no início de _exec_navegando.
             self._parar()
             return
-        front = self._range_no_setor(0.0, AVANCO_FRONT_SECTOR)
-        self._pub_cmd.publish(self._ajuste_fino(RE_DIST, front, VS_VEL))
+        rng = self._estimar_range_flag()  # distância à flag (não cone frontal largo)
+        self._pub_cmd.publish(self._ajuste_fino(RE_DIST, rng, VS_VEL))
 
     def _ajuste_fino(self, alvo, front, vel):
         """Twist p/ manter a flag à distância 'alvo' (m) e CENTRADA (bearing~0).
@@ -610,15 +621,15 @@ class ControleRobo(Node):
         self._posic_ticks += 1
 
         if self._posic_fase == 0:  # recua até a FOLGA (RE_DIST) e estende o braço
-            front = self._range_no_setor(0.0, AVANCO_FRONT_SECTOR)
+            rng = self._estimar_range_flag()  # distância à flag (não cone frontal largo)
             # Perto demais p/ o braço estender/abrir sem bater no pole -> dá RÉ
             # até a folga (RE_DIST > alcance do braço). Só então estende.
             if (
                 not self._braco_estendido
-                and front is not None
-                and front < RE_DIST - GRAB_DIST_TOL
+                and rng is not None
+                and rng < RE_DIST - GRAB_DIST_TOL
             ):
-                self._pub_cmd.publish(self._ajuste_fino(RE_DIST, front, CREEP_VEL))
+                self._pub_cmd.publish(self._ajuste_fino(RE_DIST, rng, CREEP_VEL))
                 self._posic_ticks = 0
                 return
             if not self._braco_estendido:
@@ -637,14 +648,38 @@ class ControleRobo(Node):
         if self._posic_fase == 1:  # ajusta p/ a BANDA de garra (avança/ré) e fecha
             bearing = self._flag_bearing
             alinhado = self._bandeira_detectada and abs(bearing) <= FLAG_ALIGN_MAX
-            front = self._range_no_setor(0.0, AVANCO_FRONT_SECTOR)
-            # Na BANDA correta (|front - GRAB_DIST| <= tol), não só "perto": evita
-            # fechar a garra em overshoot (perto demais p/ o braço enrolar no pole).
-            na_dist = front is not None and abs(front - GRAB_DIST) <= GRAB_DIST_TOL
-            if na_dist and alinhado:
+            # Distância à FLAG pelo estimador (LIDAR no bearing da flag, setor estreito,
+            # + câmera fundidos). NÃO usar o cone frontal largo: ele pega o objeto mais
+            # próximo (braço, borda da plataforma, parede), não a haste.
+            rng = self._estimar_range_flag()
+            # Avança RETO (sem ré) e fecha quando rng <= grab_dist OU "encostou":
+            # alinhado e avançando, mas rng PAROU de diminuir (haste chegou à palma /
+            # braço barra) -> está posicionado, fecha mesmo que rng > grab_dist (o
+            # LIDAR mede centro->haste ~0.36 e nem sempre chega a grab_dist).
+            na_dist = rng is not None and rng <= GRAB_DIST
+            if alinhado and rng is not None:
+                if self._grab_rng_min is None or rng < self._grab_rng_min - GRAB_STALL_EPS:
+                    self._grab_rng_min = rng  # aproximou: reseta o stall
+                    self._grab_stall = 0
+                    self._posic_ticks = 0  # progredindo: não conta p/ o timeout
+                else:
+                    self._grab_stall += 1  # não aproximou mais
+            else:
+                self._grab_stall = 0
+            encostou = alinhado and self._grab_stall >= GRAB_STALL_TICKS
+            rng_s = f"{rng:.2f}" if rng is not None else "None"
+            self.get_logger().info(
+                f"[FSM] fechar garra? na_dist={na_dist} encostou={encostou} "
+                f"(rng={rng_s} alvo<={GRAB_DIST:.2f} stall={self._grab_stall}) | "
+                f"alinhado={alinhado} "
+                f"(bearing={math.degrees(bearing):.1f}° max={math.degrees(FLAG_ALIGN_MAX):.1f}° "
+                f"detec={self._bandeira_detectada})",
+                throttle_duration_sec=1.0,
+            )
+            if (na_dist or encostou) and alinhado:
                 self._parar()
                 self._gripper_grab(True)  # fecha a garra na bandeira
-                self.get_logger().info("[FSM] Alinhado e na distância — fechando a garra.")
+                self.get_logger().info("[FSM] Posicionado na haste — fechando a garra.")
                 self._posic_fase = 2
                 self._posic_ticks = 0
             elif self._posic_ticks > CREEP_MAX_TICKS:
@@ -655,8 +690,12 @@ class ControleRobo(Node):
                 )
                 self._set_estado(Estado.NAVEGANDO_PARA_BANDEIRA)
             else:
-                # Avança/dá RÉ até a banda de GRAB_DIST, mantendo o pole centrado.
-                self._pub_cmd.publish(self._ajuste_fino(GRAB_DIST, front, CREEP_VEL))
+                # Avança RETO (sem ré) centrando o pole, até rng <= grab_dist.
+                cmd = Twist()
+                if self._bandeira_detectada:
+                    cmd.angular.z = max(-VS_MAX_W, min(VS_MAX_W, VS_KP * bearing))
+                cmd.linear.x = CREEP_VEL if alinhado else 0.0
+                self._pub_cmd.publish(cmd)
             return
 
         if self._posic_fase == 2:  # garra fechando
@@ -709,41 +748,39 @@ class ControleRobo(Node):
             return
 
     def _exec_depositando(self):
-        # Perto da base: usa a VISÃO da plataforma (label 28, deposit_mode) p/ centrar
-        # e SUBIR nela, depositando a flag no centro. Deposita quando a plataforma some
-        # do FOV após ter sido vista (robô por cima) ou por timeout (fallback).
+        # Perto da base: CENTRA na plataforma (visão, label 28, metade de baixo) e
+        # avança até ficar a ~DEPOSIT_DROP_DIST do CENTRO (origem gravada, via TF).
+        # Aí vai p/ SUCESSO, que baixa o braço e solta a flag no centro. A distância
+        # vem da TF (a plataforma é plana -> LIDAR não a mede); a visão só alinha.
         self._posic_ticks += 1
+
+        pos = self._pose_atual_em_map()
+        if pos is not None and self._pose_origem is not None:
+            dx = pos.pose.position.x - self._pose_origem.pose.position.x
+            dy = pos.pose.position.y - self._pose_origem.pose.position.y
+            if math.hypot(dx, dy) <= DEPOSIT_DROP_DIST:
+                self._parar()
+                self.get_logger().info(
+                    "[FSM] A ~arm reach do centro — baixando o braço p/ soltar a flag."
+                )
+                self._set_estado(Estado.SUCESSO)
+                return
+
         if self._posic_ticks > DEPOSIT_MAX_TICKS:
             self._parar()
-            self.get_logger().warn(
-                "[FSM] Plataforma não localizada a tempo — depositando aqui."
-            )
+            self.get_logger().warn("[FSM] Tempo de depósito esgotado — soltando aqui.")
             self._set_estado(Estado.SUCESSO)
             return
-        if self._bandeira_detectada:  # em deposit_mode, a detecção é a plataforma
-            self._plat_visto = True
-            self._plat_perda = 0
-            bearing = self._flag_bearing
-            cmd = Twist()
-            cmd.angular.z = max(-VS_MAX_W, min(VS_MAX_W, VS_KP * bearing))
-            # Só avança quando centrado p/ subir reto no centro da plataforma.
-            cmd.linear.x = DEPOSIT_VEL if abs(bearing) < VS_ALIGN else 0.0
-            self._pub_cmd.publish(cmd)
-            return
-        if self._plat_visto:
-            # Sumiu APÓS ter sido vista = robô subiu na plataforma (saiu sob o FOV).
-            self._plat_perda += 1
-            if self._plat_perda >= DEPOSIT_PERDA_TICKS:
-                self._parar()
-                self.get_logger().info("[FSM] Sobre a plataforma — depositando a flag.")
-                self._set_estado(Estado.SUCESSO)
-            else:
-                self._parar()
-            return
-        # Ainda não viu a plataforma: avança devagar reto (virado p/ a origem) p/
-        # trazê-la ao FOV — também serve de dead-reckoning até a base.
+
+        # Centra na plataforma (visão) e avança devagar; sem detecção, segue reto
+        # (já está virado p/ a origem) usando a TF p/ saber quando parar (acima).
         cmd = Twist()
-        cmd.linear.x = DEPOSIT_VEL
+        if self._bandeira_detectada:
+            bearing = self._flag_bearing
+            cmd.angular.z = max(-VS_MAX_W, min(VS_MAX_W, VS_KP * bearing))
+            cmd.linear.x = DEPOSIT_VEL if abs(bearing) < VS_ALIGN else 0.0
+        else:
+            cmd.linear.x = DEPOSIT_VEL
         self._pub_cmd.publish(cmd)
 
     # ------------------------------------------------------------------ #
