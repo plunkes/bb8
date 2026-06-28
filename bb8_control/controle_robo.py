@@ -59,10 +59,10 @@ class Estado(Enum):
 
 # Detecção / aproximação da bandeira
 FLAG_DETEC_MIN_TICKS = (
-    10  # ticks consecutivos de detecção antes de comutar p/ navegação
+    5  # ticks consecutivos de detecção antes de comutar p/ navegação (reage em ~0.5s)
 )
 FLAG_PERDA_MAX = 25  # ticks sem detecção, durante a navegação, antes de re-explorar
-STOP_DIST = 0.45  # [m] distância de parada à frente da flag (braço alcança o mastro)
+STOP_DIST = 0.30  # [m] parada à frente da flag (braço novo é mais curto: chega mais perto)
 SETOR_BANDEIRA = math.radians(
     8.0
 )  # meia-largura do setor LIDAR amostrado em torno do bearing
@@ -84,17 +84,17 @@ GOAL_REFRESH_TICKS = 10  # re-mira o goal de aproximação a cada ~1 s (rastreia
 
 # Servo visual (aproximação final): assume o controle quando a flag está perto,
 # mantendo-a no centro da câmera. Evita o Nav2 girar/colapsar o goal de perto.
-VS_DIST = 1.0  # [m] abaixo disto, controle visual simples em vez de goals do Nav2
+VS_DIST = 0.7  # [m] abaixo disto, controle visual simples em vez de goals do Nav2
 VS_KP = 1.5  # ganho de giro [rad/s por rad de bearing]
 VS_MAX_W = 1.2  # [rad/s] giro máximo no servo
 VS_VEL = 0.25  # [m/s] avanço quando a flag está centrada
 VS_ALIGN = math.radians(12.0)  # |bearing| p/ considerar centrada e poder avançar
 
 # Sequência de captura em POSICIONANDO_FINAL (ticks @ FREQ_CONTROLE=10Hz):
-GRIPPER_EXTEND_TICKS = 15  # ~1.5 s p/ o braço estender antes de avançar
-GRIPPER_CLOSE_TICKS = 15  # ~1.5 s p/ a garra fechar na flag antes de erguer
-GRIPPER_LIFT_TICKS = 15  # ~1.5 s p/ o ombro erguer a flag antes de retornar
-GRAB_DIST = 0.3  # [m] para de avançar quando a flag está ao alcance do braço
+GRIPPER_EXTEND_TICKS = 10  # ~1.0 s p/ o braço estender (juntas a vel 3.0 chegam a tempo)
+GRIPPER_CLOSE_TICKS = 10  # ~1.0 s p/ a garra fechar na flag antes de erguer
+GRIPPER_LIFT_TICKS = 10  # ~1.0 s p/ o ombro erguer a flag antes de retornar
+GRAB_DIST = 0.20  # [m] fecha a garra quando a flag está ao alcance do braço (curto)
 CREEP_VEL = 0.12  # [m/s] avanço lento e final até encostar na flag
 CREEP_MAX_TICKS = 20  # ticks ~3 s máx de avanço final (segurança)
 
@@ -106,9 +106,8 @@ FOOTPRINT_COM_BRACO = "[[0.62, 0.17], [0.62, -0.17], [-0.23, -0.17], [-0.23, 0.1
 # "Encravado" em área aberta: explore manda goals pro lugar onde o robô já está
 # (LIDAR sem retorno -> sem fronteira). Detecta pouca movimentação e avança a esmo.
 STUCK_MIN_MOVE = 0.15  # [m] deslocamento mínimo p/ considerar que está se movendo
-STUCK_MAX_TICKS = 50  # ticks ~5 s quase parado em EXPLORANDO antes de avançar
-AVANCO_MAX_TICKS = 40  # ticks ~4 s indo p/ frente antes de voltar a explorar
-INICIO_PAREDE_TICKS = 30  # ticks ~3 s seguindo parede logo ao inicializar
+STUCK_MAX_TICKS = 30  # ticks ~3 s quase parado em EXPLORANDO antes de avançar (entra cedo)
+AVANCO_MAX_TICKS = 60  # ticks ~6 s indo p/ frente antes de voltar a explorar (busca mais longa)
 AVANCO_VEL = 0.4  # [m/s] velocidade ao avançar à procura de parede
 AVANCO_FRONT_SECTOR = math.radians(20.0)  # meia-largura do setor frontal vigiado
 AVANCO_SAFE_DIST = 0.7  # [m] obstáculo mais perto que isto à frente -> não avança
@@ -194,7 +193,6 @@ class ControleRobo(Node):
         self._avanco_budget = (
             AVANCO_MAX_TICKS  # duração da entrada atual em BUSCANDO_PAREDE
         )
-        self._inicio_parede_pendente = True  # 1º BUSCANDO_PAREDE = só 3 s de início
         self._posic_ticks = 0  # ticks na sequência de captura (POSICIONANDO_FINAL)
         self._posic_fase = 0  # 0 = estendendo braço, 1 = garra fechando
         self._missao_completa = False
@@ -274,12 +272,7 @@ class ControleRobo(Node):
         elif estado == Estado.BUSCANDO_PAREDE:
             self._set_explore(False)  # pausa o m-explore (libera o /cmd_vel)
             self._avanco_ticks = 0
-            # 1ª vez (logo após inicializar) dura só ~3 s; depois é recovery de ~4 s.
-            if self._inicio_parede_pendente:
-                self._avanco_budget = INICIO_PAREDE_TICKS
-                self._inicio_parede_pendente = False
-            else:
-                self._avanco_budget = AVANCO_MAX_TICKS
+            self._avanco_budget = AVANCO_MAX_TICKS  # recovery de ~4 s
         elif estado == Estado.NAVEGANDO_PARA_BANDEIRA:
             self._set_explore(False)  # pausa o m-explore (cancela goal no Nav2)
             self._nav_retries = 0
@@ -321,8 +314,8 @@ class ControleRobo(Node):
                 )
                 return
         self.get_logger().info("[FSM] Nav2 pronto e origem gravada.")
-        # Começa seguindo parede por ~3 s antes de liberar a exploração.
-        self._set_estado(Estado.BUSCANDO_PAREDE)
+        # LIDAR é 360°: o mapa já nasce povoado ao redor -> explora/planeja direto.
+        self._set_estado(Estado.EXPLORANDO)
 
     def _exec_explorando(self):
         # O explore_lite cuida da navegação; vigiamos a bandeira...

@@ -117,7 +117,11 @@ def generate_launch_description():
         package="bb8_control",
         executable="vision_processor",
         name="vision_processor",
-        parameters=[{"use_sim_time": True}, {"flag_label_ids": [25]}],
+        parameters=[
+            {"use_sim_time": True},
+            {"flag_label_ids": [25]},
+            {"camera_hfov_deg": 108.86},  # casa com horizontal_fov 1.9 rad do sensor
+        ],
         output="screen",
     )
 
