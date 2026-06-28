@@ -10,7 +10,7 @@ controle_robo:
     # --- Detecção / aproximação da bandeira ---
     flag_detec_min_ticks: 5 # ticks consecutivos detectando antes de navegar (~0.5s)
     flag_perda_max: 25 # ticks sem ver a flag (navegando) antes de re-explorar
-    stop_dist: 0.29 # [m] parada do goal: ~alcance do braço (0.39) p/ não atropelar a haste
+    stop_dist: 0.30 # [m] parada do goal: ~alcance do braço (0.39) p/ não atropelar a haste
     setor_bandeira_deg: 8.0 # meia-largura do setor LIDAR em torno do bearing
     range_fallback: 2.5 # [m] distância assumida se o LIDAR não retornar
     nav_retry_max: 3 # reenvios de goal antes de desistir/re-explorar
@@ -34,7 +34,7 @@ controle_robo:
     gripper_extend_ticks: 10
     gripper_close_ticks: 10
     gripper_lift_ticks: 10
-    grab_dist: 0.40 # [m] fecha a garra (na_dist): >platô da haste (~0.36) p/ parar ANTES de empurrar
+    grab_dist: 0.41 # [m] fecha a garra (na_dist): >platô da haste (~0.36) p/ parar ANTES de empurrar
     creep_vel: 0.08 # [m/s] avanço lento final (menor = menos overshoot)
     creep_max_ticks: 20 # teto do avanço final (segurança)
     grab_dist_tol: 0.05 # [m] banda em torno de grab_dist (dá ré se passar do ponto)
@@ -44,11 +44,11 @@ controle_robo:
     vel_retorno: 1.5 # [m/s] velocidade na volta à base (caminho já conhecido)
 
     # --- Depósito da flag na plataforma de início (label 28, visão) ---
-    deposit_standoff: 0.6 # [m] para a esta distância da origem (plataforma à frente)
+    deposit_standoff: 0.5 # [m] para a esta distância da origem (plataforma à frente)
     deposit_vel: 0.2 # [m/s] avanço lento centrando na plataforma
     deposit_max_ticks: 60 # ticks ~8 s máx (fallback) p/ subir na plataforma
     deposit_perda_ticks: 8 # ticks sem ver a plataforma (após vê-la) = está por cima
-    deposit_drop_dist: 0.4 # [m] distância ao centro (origem) p/ baixar o braço e soltar
+    deposit_drop_dist: 0.45 # [m] distância ao centro (origem) p/ baixar o braço e soltar
 
     # --- Encravado / busca de parede (recovery) ---
     stuck_min_move: 0.15 # [m] deslocamento mín. p/ "está se movendo"

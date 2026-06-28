@@ -40,5 +40,5 @@ explore_node:
 
     transform_tolerance: 0.3
     min_frontier_size:
-      0.8 # [m] ignora fronteiras pequenas (slivers) → não
+      1.0 # [m] ignora fronteiras pequenas (slivers) → não
       #     volta pra pintar pedacinhos de área conhecida

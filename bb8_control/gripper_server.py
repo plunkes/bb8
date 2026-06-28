@@ -54,9 +54,9 @@ class GripperServer(Node):
         self.get_logger().info("[gripper] services /gripper/extend e /gripper/grab prontos")
 
     def _init_retraido(self):
+        # Postura inicial (uma vez): braço recolhido + garra fechada.
         self._enviar(ARM_RETRAIDO)
         self._timer.cancel()
-        self.get_logger().info("[gripper] postura inicial: RETRAÍDO")
 
     def _cb_extend(self, req, resp):
         if req.data:
@@ -68,7 +68,6 @@ class GripperServer(Node):
             self._estendido = False
             resp.message = "braço retraído"
         resp.success = True
-        self.get_logger().info(f"[gripper] {resp.message}")
         return resp
 
     def _cb_grab(self, req, resp):
@@ -76,7 +75,6 @@ class GripperServer(Node):
         self._enviar(ARM_ESTENDIDO_FECHADO if req.data else ARM_ESTENDIDO_ABERTO)
         resp.success = True
         resp.message = "garra fechada" if req.data else "garra aberta"
-        self.get_logger().info(f"[gripper] {resp.message}")
         return resp
 
     def _cb_lift(self, req, resp):
@@ -84,7 +82,6 @@ class GripperServer(Node):
         self._enviar(ARM_LEVANTADO_FECHADO if req.data else ARM_ESTENDIDO_FECHADO)
         resp.success = True
         resp.message = "flag erguida (ombro 45°)" if req.data else "ombro abaixado"
-        self.get_logger().info(f"[gripper] {resp.message}")
         return resp
 
     def _enviar(self, posicoes):

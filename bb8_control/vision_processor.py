@@ -65,19 +65,10 @@ class VisionProcessorNode(Node):
         )
 
     def _cb_pole_mode(self, msg: Bool):
-        if msg.data != self._pole_mode:
-            self._pole_mode = msg.data
-            self.get_logger().info(
-                f"[vision] pole_mode={'ON (só metade de baixo)' if msg.data else 'OFF'}"
-            )
+        self._pole_mode = msg.data  # ON = usa só a metade de baixo da imagem (mastro)
 
     def _cb_deposit_mode(self, msg: Bool):
-        if msg.data != self._deposit_mode:
-            self._deposit_mode = msg.data
-            alvo = "PLATAFORMA (depósito)" if msg.data else "flag"
-            self.get_logger().info(
-                f"[vision] deposit_mode={'ON' if msg.data else 'OFF'} -> alvo={alvo}"
-            )
+        self._deposit_mode = msg.data  # ON = detecta a plataforma (label) em vez da flag
 
     def _cb_labels(self, msg: Image):
         try:
@@ -95,8 +86,6 @@ class VisionProcessorNode(Node):
         alvo_labels = self._platform_labels if self._deposit_mode else self._flag_labels
         # Máscara COMPLETA do alvo: usada p/ a ALTURA na distância.
         flag_mask_full = np.isin(img, list(alvo_labels))
-        # No modo pole, zera a metade de cima -> só o mastro (parte de baixo) conta
-        # p/ centroide/bearing, levando o robô ao centro do mastro, não da bandeira.
         flag_mask = flag_mask_full
         # METADE DE BAIXO só: no pole_mode (flag) ignora o painel alto; no deposit_mode
         # a plataforma está no CHÃO (parte de baixo) e a flag erguida que o robô carrega
@@ -112,43 +101,27 @@ class VisionProcessorNode(Node):
         bearing_msg = Float32()
         distance_msg = Float32()
 
-        img_h, img_w = float(img.shape[0]), float(img.shape[1])
+        img_w = float(img.shape[1])
         if self._focal_px is None:
             # fx = (largura/2) / tan(HFOV/2); pixels quadrados => fy = fx.
             self._focal_px = (img_w / 2.0) / math.tan(self._hfov / 2.0)
 
         if detected:
-            ys, xs = np.where(flag_mask)
-            cx = float(np.mean(xs))
-            cy = float(np.mean(ys))
-            total_px = img_w * img_h
-
+            cx = float(np.mean(np.where(flag_mask)[1]))  # centroide x (p/ o bearing)
             bearing = (img_w / 2.0 - cx) / (img_w / 2.0) * (self._hfov / 2.0)
-            fraction_pct = area / total_px * 100.0
 
-            # Distância por pinhole pela ALTURA aparente do blob (imune a obstáculo
-            # que esteja entre o robô e a flag — usa o tamanho, não o range do LIDAR).
-            # IMPORTANTE: usa a flag INTEIRA (flag_mask_full), NÃO a máscara do
-            # pole_mode. Senão a meia-imagem corta bbox_h e SUPERESTIMA a distância
-            # (robô chega perto demais antes de fechar a garra). flag_h é a altura
-            # real da flag inteira -> bbox_h também tem que ser da flag inteira.
+            # Distância por pinhole pela ALTURA aparente do alvo (usa o tamanho, não o
+            # range do LIDAR). Usa a máscara INTEIRA (flag_mask_full), NÃO o recorte de
+            # metade de baixo — senão bbox_h fica cortado e SUPERESTIMA a distância.
             ys_full = np.where(flag_mask_full)[0]
             bbox_h = float(ys_full.max() - ys_full.min() + 1) if ys_full.size else 0.0
-            distance = (
-                self._focal_px * self._flag_h / bbox_h if bbox_h > 0 else 0.0
-            )
+            distance = self._focal_px * self._flag_h / bbox_h if bbox_h > 0 else 0.0
 
             pose_msg.x = cx
             pose_msg.y = float(area)
             pose_msg.theta = 1.0
             bearing_msg.data = float(bearing)
             distance_msg.data = float(distance)
-
-            self.get_logger().info(
-                f"Flag @ ({cx:.0f}, {cy:.0f})px  bearing={math.degrees(bearing):.1f}°"
-                f"  area={area}px ({fraction_pct:.2f}%)  dist~{distance:.2f}m",
-                throttle_duration_sec=1.0,
-            )
             scene_class = "objective"
         else:
             pose_msg.theta = 0.0

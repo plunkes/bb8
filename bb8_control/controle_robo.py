@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
-"""FSM de alto nível: orquestra m-explore (exploração de fronteiras) e Nav2.
+"""FSM de alto nível: orquestra exploração (explore_lite), navegação (Nav2),
+captura e depósito da bandeira.
 
-Fluxo:
-  INICIALIZANDO -> espera o Nav2 (action server navigate_to_pose) ficar pronto.
-  EXPLORANDO    -> libera o explore_lite (explore/resume=True); ele manda goals
-                   de fronteira ao Nav2 e o mapa cresce via slam_toolbox.
-  NAVEGANDO_PARA_BANDEIRA -> ao detectar a bandeira, pausa o explore
-                   (explore/resume=False, que cancela o goal atual no Nav2),
-                   calcula a pose à frente da flag (bearing da câmera + range do
-                   LIDAR), transforma para o frame 'map' e envia um NavigateToPose.
-  POSICIONANDO_FINAL -> chegou: chama o Service /gripper/grab (estende+fecha).
-  RETORNANDO_ORIGEM -> navega de volta à pose inicial (gravada na inicialização).
+Estados / fluxo:
+  INICIALIZANDO -> espera o Nav2 (navigate_to_pose) e grava a pose de origem.
+  EXPLORANDO -> libera o explore_lite (explore/resume); vigia a bandeira e o
+                "encravamento".
+  BUSCANDO_PAREDE -> recovery: encravado em área aberta, avança e desvia p/ o lado
+                mais aberto; volta a EXPLORANDO (ou à bandeira se a avistar).
+  NAVEGANDO_PARA_BANDEIRA -> envia goals NavigateToPose à frente da flag (bearing
+                câmera + range câmera/LIDAR); de perto assume o servo visual.
+  POSICIONANDO_FINAL -> recua p/ a folga, estende o braço, centra/avança na haste,
+                fecha a garra, ergue a flag e aumenta o footprint.
+  RETORNANDO_ORIGEM -> Nav2 (mais rápido) p/ perto da base (standoff da origem).
+  DEPOSITANDO -> visão da plataforma (label 28) p/ centrar + TF até o centro.
+  SUCESSO -> abaixa o braço, solta a flag e imprime a vitória.
 
-O Nav2 é dono do /cmd_vel (repassado ao diff_drive pelo relay_cmd_vel). Esta FSM
-não publica velocidade nem comanda o braço por tópico — o gripper é acionado via
-Service (/gripper/grab, gripper_server). Só emite o sinal de controle do explore.
+O Nav2 é dono do /cmd_vel na navegação; nas fases de perto (servo, captura,
+recovery, depósito) a FSM publica /cmd_vel direto. O gripper é acionado por
+Services (/gripper/extend, /gripper/grab, /gripper/lift) no gripper_server.
 """
 
 import math
@@ -56,8 +60,8 @@ class Estado(Enum):
     BUSCANDO_PAREDE = auto()  # robô encravado em área aberta: avança p/ achar parede
 
 
-# Braço/gripper agora é acionado via Service (/gripper/grab, SetBool) no nó
-# gripper_server — esta FSM não publica mais em /gripper_controller/commands.
+# Defaults de módulo (fallback). Os valores em uso vêm de config/fsm_params.yaml
+# via _carregar_params(). Ângulos guardados em rad (yaml expõe em graus).
 
 # Detecção / aproximação da bandeira
 FLAG_DETEC_MIN_TICKS = (
@@ -103,11 +107,19 @@ GRIPPER_EXTEND_TICKS = (
 GRIPPER_CLOSE_TICKS = 10  # ~1.0 s p/ a garra fechar na flag antes de erguer
 GRIPPER_LIFT_TICKS = 10  # ~1.0 s p/ o ombro erguer a flag antes de retornar
 GRAB_DIST = 0.40  # [m] fecha a garra (na_dist): > platô da haste (~0.36), para antes de empurrar
-CREEP_VEL = 0.08  # [m/s] avanço lento e final até encostar na flag (menor = menos overshoot)
+CREEP_VEL = (
+    0.08  # [m/s] avanço lento e final até encostar na flag (menor = menos overshoot)
+)
 CREEP_MAX_TICKS = 20  # ticks ~3 s máx de avanço final (segurança)
-GRAB_DIST_TOL = 0.05  # [m] banda em torno de GRAB_DIST p/ "na distância" (dá ré se passar)
-GRAB_STALL_EPS = 0.01  # [m] progresso mín. de rng p/ não contar como "encostou" na haste
-GRAB_STALL_TICKS = 6  # ticks alinhado sem aproximar (rng parou) = haste na palma -> fecha
+GRAB_DIST_TOL = (
+    0.05  # [m] banda em torno de GRAB_DIST p/ "na distância" (dá ré se passar)
+)
+GRAB_STALL_EPS = (
+    0.01  # [m] progresso mín. de rng p/ não contar como "encostou" na haste
+)
+GRAB_STALL_TICKS = (
+    6  # ticks alinhado sem aproximar (rng parou) = haste na palma -> fecha
+)
 VEL_RETORNO = 1.5  # [m/s] velocidade na volta à base (caminho já conhecido)
 RE_DIST = 0.55  # [m] folga p/ estender/abrir o braço sem bater no pole (> alcance ~0.4)
 
@@ -117,7 +129,9 @@ DEPOSIT_STANDOFF = 1.0  # [m] para a esta distância da origem (plataforma à fr
 DEPOSIT_VEL = 0.15  # [m/s] avanço lento centrando na plataforma
 DEPOSIT_MAX_TICKS = 80  # ticks ~8 s máx procurando/subindo na plataforma (fallback)
 DEPOSIT_PERDA_TICKS = 8  # ticks sem ver a plataforma (após vê-la) = está por cima dela
-DEPOSIT_DROP_DIST = 0.4  # [m] distância ao centro (origem) p/ baixar o braço e soltar a flag
+DEPOSIT_DROP_DIST = (
+    0.4  # [m] distância ao centro (origem) p/ baixar o braço e soltar a flag
+)
 
 # Footprint para a checagem de colisão do Nav2:
 #   normal (braço retraído) vs com o braço estendido segurando a flag (+~0.4 m à frente).
@@ -177,7 +191,7 @@ class ControleRobo(Node):
         # --- Saídas ---
         # Controle do explore_lite: True retoma, False pausa (e cancela goal no Nav2).
         self._pub_explore = self.create_publisher(Bool, "explore/resume", 10)
-        # Velocidade direta (só usada no estado BUSCANDO_PAREDE; Nav2 não tem goal lá).
+        # Velocidade direta (/cmd_vel) nas fases de perto: servo, captura, recovery, depósito.
         self._pub_cmd = self.create_publisher(Twist, "/cmd_vel", 10)
         # Modo "pole": pede ao vision_processor p/ olhar só a metade de baixo da
         # câmera (mastro), ignorando o painel da bandeira no topo. Ativo em POSICIONANDO.
@@ -400,9 +414,6 @@ class ControleRobo(Node):
             self._braco_estendido = False
             self._grab_rng_min = None
             self._grab_stall = 0
-            self.get_logger().info(
-                "[FSM] Na bandeira — recuando p/ a folga antes de estender o braço."
-            )
         elif estado == Estado.RETORNANDO_ORIGEM:
             self._set_explore(False)
             self._nav_retries = 0
@@ -416,16 +427,12 @@ class ControleRobo(Node):
             self._posic_ticks = 0
             self._plat_visto = False
             self._plat_perda = 0
-            self.get_logger().info(
-                "[FSM] Perto da base — usando a visão p/ centrar na plataforma."
-            )
         elif estado == Estado.SUCESSO:
             self._set_explore(False)
             self._set_deposit_mode(False)  # desliga a detecção da plataforma
             self._posic_ticks = 0
             self._posic_fase = 0
             self._gripper_lift(False)  # abaixa o ombro (45° -> 0); garra ainda fechada
-            self.get_logger().info("[FSM] Na base — abaixando o braço p/ soltar a flag.")
 
     # ------------------------------------------------------------------ #
     # Estados
@@ -433,20 +440,11 @@ class ControleRobo(Node):
     def _exec_inicializando(self):
         # Espera o Nav2 expor o action server e grava a origem antes de explorar.
         if not self._nav_client.server_is_ready():
-            self.get_logger().info(
-                "[FSM] Aguardando action server navigate_to_pose...",
-                throttle_duration_sec=3.0,
-            )
             return
         if self._pose_origem is None:
             self._pose_origem = self._pose_atual_em_map()
             if self._pose_origem is None:
-                self.get_logger().info(
-                    "[FSM] Aguardando TF map->base_link p/ gravar origem...",
-                    throttle_duration_sec=2.0,
-                )
                 return
-        self.get_logger().info("[FSM] Nav2 pronto e origem gravada.")
         # LIDAR é 360°: o mapa já nasce povoado ao redor -> explora/planeja direto.
         self._set_estado(Estado.EXPLORANDO)
 
@@ -457,9 +455,6 @@ class ControleRobo(Node):
             return
         # ...e se o robô encravou (parado recebendo goals pro próprio lugar).
         if self._detectar_encravado():
-            self.get_logger().warn(
-                "[FSM] Encravado em área aberta — avançando p/ achar parede."
-            )
             self._set_estado(Estado.BUSCANDO_PAREDE)
 
     def _detectar_encravado(self):
@@ -516,16 +511,12 @@ class ControleRobo(Node):
     def _exec_navegando(self):
         # 1) Chegou? alinhado + flag grande na imagem + perto pelo LIDAR -> pega.
         if self._pronto_para_pegar():
-            self.get_logger().info(
-                "[FSM] Flag alinhada, grande e próxima -> POSICIONANDO_FINAL."
-            )
             self._cancelar_goal()
             self._set_estado(Estado.POSICIONANDO_FINAL)
             return
 
         # 2) Perdeu a bandeira de vista por tempo demais -> volta a explorar.
         if self._flag_perda_ticks > FLAG_PERDA_MAX:
-            self.get_logger().warn("[FSM] Bandeira perdida — voltando a explorar.")
             self._cancelar_goal()
             self._set_estado(Estado.EXPLORANDO)
             return
@@ -536,11 +527,7 @@ class ControleRobo(Node):
         #     flag ou perdê-la de vista por tempo demais, tratado acima).
         rng = self._estimar_range_flag()
         if self._servo_ativo or (rng is not None and rng <= VS_DIST):
-            if not self._servo_ativo:
-                self._servo_ativo = True
-                self.get_logger().info(
-                    "[FSM] Flag perto (<1m) — controle visual simples, Nav2 desligado."
-                )
+            self._servo_ativo = True  # latch: servo visual assume, Nav2 desligado
             self._cancelar_goal()
             self._servo_visual()
             return
@@ -550,14 +537,8 @@ class ControleRobo(Node):
             self._nav_status = None
             if self._nav_retries < NAV_RETRY_MAX and self._bandeira_detectada:
                 self._nav_retries += 1
-                self.get_logger().warn(
-                    f"[FSM] Goal falhou — retry {self._nav_retries}/{NAV_RETRY_MAX}"
-                )
                 self._enviar_goal_bandeira()
             else:
-                self.get_logger().warn(
-                    "[FSM] Desistindo do goal — voltando a explorar."
-                )
                 self._cancelar_goal()
                 self._set_estado(Estado.EXPLORANDO)
             return
@@ -614,14 +595,17 @@ class ControleRobo(Node):
         return cmd
 
     def _exec_posicionando(self):
-        # Captura em 4 fases: (0) estende o braço no nível da flag, (1) avança até
-        # encostar na flag, (2) fecha a garra, (3) ERGUE a flag (ombro 45°) — só
-        # depois disso troca o footprint e retorna à origem. Erguer tira a flag da
-        # frente do robô e o scan_masker mascara o setor frontal (não vira obstáculo).
+        # Captura em 4 fases:
+        #   0 = recua até a folga (RE_DIST) e ESTENDE o braço (garra aberta);
+        #   1 = avança/centra na haste e FECHA a garra (na_dist OU encostou);
+        #   2 = espera a garra fechar e ERGUE a flag (ombro 45°);
+        #   3 = espera erguer, aumenta o footprint e vai p/ RETORNANDO_ORIGEM.
         self._posic_ticks += 1
 
         if self._posic_fase == 0:  # recua até a FOLGA (RE_DIST) e estende o braço
-            rng = self._estimar_range_flag()  # distância à flag (não cone frontal largo)
+            rng = (
+                self._estimar_range_flag()
+            )  # distância à flag (não cone frontal largo)
             # Perto demais p/ o braço estender/abrir sem bater no pole -> dá RÉ
             # até a folga (RE_DIST > alcance do braço). Só então estende.
             if (
@@ -636,7 +620,6 @@ class ControleRobo(Node):
                 self._parar()
                 self._gripper_extend(True)  # estende o braço (garra aberta) COM folga
                 self._braco_estendido = True
-                self.get_logger().info("[FSM] Na folga — estendendo o braço.")
                 self._posic_ticks = 0
                 return
             self._posic_ticks += 1
@@ -658,7 +641,10 @@ class ControleRobo(Node):
             # LIDAR mede centro->haste ~0.36 e nem sempre chega a grab_dist).
             na_dist = rng is not None and rng <= GRAB_DIST
             if alinhado and rng is not None:
-                if self._grab_rng_min is None or rng < self._grab_rng_min - GRAB_STALL_EPS:
+                if (
+                    self._grab_rng_min is None
+                    or rng < self._grab_rng_min - GRAB_STALL_EPS
+                ):
                     self._grab_rng_min = rng  # aproximou: reseta o stall
                     self._grab_stall = 0
                     self._posic_ticks = 0  # progredindo: não conta p/ o timeout
@@ -667,27 +653,14 @@ class ControleRobo(Node):
             else:
                 self._grab_stall = 0
             encostou = alinhado and self._grab_stall >= GRAB_STALL_TICKS
-            rng_s = f"{rng:.2f}" if rng is not None else "None"
-            self.get_logger().info(
-                f"[FSM] fechar garra? na_dist={na_dist} encostou={encostou} "
-                f"(rng={rng_s} alvo<={GRAB_DIST:.2f} stall={self._grab_stall}) | "
-                f"alinhado={alinhado} "
-                f"(bearing={math.degrees(bearing):.1f}° max={math.degrees(FLAG_ALIGN_MAX):.1f}° "
-                f"detec={self._bandeira_detectada})",
-                throttle_duration_sec=1.0,
-            )
             if (na_dist or encostou) and alinhado:
                 self._parar()
                 self._gripper_grab(True)  # fecha a garra na bandeira
-                self.get_logger().info("[FSM] Posicionado na haste — fechando a garra.")
                 self._posic_fase = 2
                 self._posic_ticks = 0
             elif self._posic_ticks > CREEP_MAX_TICKS:
                 # Não conseguiu posicionar a tempo: NÃO pega torto — re-aproxima.
                 self._parar()
-                self.get_logger().warn(
-                    "[FSM] Não posicionou no pole a tempo — re-aproximando."
-                )
                 self._set_estado(Estado.NAVEGANDO_PARA_BANDEIRA)
             else:
                 # Avança RETO (sem ré) centrando o pole, até rng <= grab_dist.
@@ -702,7 +675,6 @@ class ControleRobo(Node):
             if self._posic_ticks >= GRIPPER_CLOSE_TICKS:
                 # Garra fechou em volta da flag: agora SIM ergue a flag (ombro 45°).
                 self._gripper_lift(True)
-                self.get_logger().info("[FSM] Garra fechada — erguendo a flag.")
                 self._posic_fase = 3
                 self._posic_ticks = 0
             return
@@ -712,9 +684,6 @@ class ControleRobo(Node):
                 # Flag erguida e fora do FOV frontal (scan_masker mascara): aumenta
                 # o footprint p/ manobrar e retorna à origem.
                 self._set_footprint(FOOTPRINT_COM_BRACO)
-                self.get_logger().info(
-                    "[FSM] Flag erguida; footprint com braço — retornando à origem."
-                )
                 self._set_estado(Estado.RETORNANDO_ORIGEM)
 
     def _exec_retornando(self):
@@ -724,12 +693,8 @@ class ControleRobo(Node):
             self._nav_status = None
             if self._nav_retries < NAV_RETRY_MAX:
                 self._nav_retries += 1
-                self.get_logger().warn(
-                    f"[FSM] Retorno falhou — retry {self._nav_retries}/{NAV_RETRY_MAX}"
-                )
                 self._enviar_goal_origem()
             else:
-                self.get_logger().error("[FSM] Não foi possível retornar à origem.")
                 self._missao_completa = True
 
     def _exec_sucesso(self):
@@ -738,7 +703,6 @@ class ControleRobo(Node):
         if self._posic_fase == 0:  # abaixando o ombro (45° -> 0)
             if self._posic_ticks >= GRIPPER_LIFT_TICKS:
                 self._gripper_grab(False)  # abre a garra -> solta a bandeira
-                self.get_logger().info("[FSM] Braço abaixado — soltando a bandeira.")
                 self._posic_fase = 1
                 self._posic_ticks = 0
             return
@@ -760,16 +724,12 @@ class ControleRobo(Node):
             dy = pos.pose.position.y - self._pose_origem.pose.position.y
             if math.hypot(dx, dy) <= DEPOSIT_DROP_DIST:
                 self._parar()
-                self.get_logger().info(
-                    "[FSM] A ~arm reach do centro — baixando o braço p/ soltar a flag."
-                )
-                self._set_estado(Estado.SUCESSO)
+                self._set_estado(Estado.SUCESSO)  # no centro: baixa o braço e solta
                 return
 
         if self._posic_ticks > DEPOSIT_MAX_TICKS:
             self._parar()
-            self.get_logger().warn("[FSM] Tempo de depósito esgotado — soltando aqui.")
-            self._set_estado(Estado.SUCESSO)
+            self._set_estado(Estado.SUCESSO)  # fallback por tempo
             return
 
         # Centra na plataforma (visão) e avança devagar; sem detecção, segue reto
@@ -791,36 +751,20 @@ class ControleRobo(Node):
         # costuma estar além do que o LIDAR já mapeou), encurta o trajeto pela metade
         # sucessivamente até achar um goal alcançável dentro do global costmap.
         pose = None
-        fracao_ok = 1.0
         for fracao in GOAL_FRACOES:
             cand = self._calcular_pose_bandeira(fracao)
             if cand is None:
                 # Sem TF/scan ainda: tenta de novo no próximo tick (não comuta estado).
-                self.get_logger().warn(
-                    "[FSM] Não foi possível calcular a pose da bandeira ainda.",
-                    throttle_duration_sec=1.0,
-                )
                 self._nav_status = "falha"
                 return
             if self._goal_alcancavel(cand):
                 pose = cand
-                fracao_ok = fracao
                 break
 
         if pose is None:
-            self.get_logger().warn(
-                "[FSM] Nenhuma fração do trajeto até a bandeira caiu em célula "
-                "livre/conhecida; aguardando mais mapa.",
-                throttle_duration_sec=1.0,
-            )
+            # Nenhuma fração caiu dentro do mapa: aguarda mais mapa.
             self._nav_status = "falha"
             return
-
-        if fracao_ok < 1.0:
-            self.get_logger().info(
-                f"[FSM] Goal cheio inalcançável (flag fora do mapa); "
-                f"mirando {fracao_ok * 100:.0f}% do trajeto."
-            )
 
         if not self._nav_client.server_is_ready():
             self._nav_status = "falha"
@@ -829,10 +773,6 @@ class ControleRobo(Node):
         goal = NavigateToPose.Goal()
         goal.pose = pose
         self._nav_status = "pendente"
-        self.get_logger().info(
-            f"[FSM] Enviando goal da bandeira: "
-            f"({pose.pose.position.x:.2f}, {pose.pose.position.y:.2f}) [map]"
-        )
         send_future = self._nav_client.send_goal_async(goal)
         send_future.add_done_callback(self._on_goal_response)
 
@@ -841,7 +781,6 @@ class ControleRobo(Node):
         robô vem e VIRADO p/ a origem — a plataforma fica à frente p/ a visão centrar e
         o robô subir nela (depósito da flag). O depósito fino fica no DEPOSITANDO."""
         if self._pose_origem is None or not self._nav_client.server_is_ready():
-            self.get_logger().error("[FSM] Sem origem/Nav2 para retornar.")
             self._nav_status = "falha"
             return
         ox = self._pose_origem.pose.position.x
@@ -864,10 +803,6 @@ class ControleRobo(Node):
         goal.pose.pose.orientation.z = math.sin(yaw / 2.0)
         goal.pose.pose.orientation.w = math.cos(yaw / 2.0)
         self._nav_status = "pendente"
-        self.get_logger().info(
-            f"[FSM] Retornando p/ a base (standoff {DEPOSIT_STANDOFF:.1f} m): "
-            f"({gx:.2f}, {gy:.2f}) [map]"
-        )
         send_future = self._nav_client.send_goal_async(goal)
         send_future.add_done_callback(self._on_goal_response)
 
@@ -944,11 +879,7 @@ class ControleRobo(Node):
             pose_map = self._tf_buffer.transform(
                 pose_base, "map", timeout=Duration(seconds=0.3)
             )
-        except Exception as exc:  # TransformException e afins
-            self.get_logger().warn(
-                f"[FSM] Falha ao transformar base_link->map: {exc}",
-                throttle_duration_sec=1.0,
-            )
+        except Exception:  # TransformException e afins
             return None
 
         pose_map.header.stamp = self.get_clock().now().to_msg()
@@ -993,7 +924,6 @@ class ControleRobo(Node):
     def _on_goal_response(self, future):
         handle = future.result()
         if not handle.accepted:
-            self.get_logger().warn("[FSM] Goal REJEITADO pelo Nav2.")
             self._goal_handle = None
             self._nav_status = "falha"
             return
@@ -1004,15 +934,10 @@ class ControleRobo(Node):
     def _on_goal_result(self, future):
         status = future.result().status
         if status == GoalStatus.STATUS_SUCCEEDED:
-            self.get_logger().info("[FSM] Nav2 reportou goal ALCANÇADO.")
             self._nav_status = "sucesso"
         elif status == GoalStatus.STATUS_CANCELED:
-            # Cancelamento deliberado nosso — não marca como falha.
-            self.get_logger().info("[FSM] Goal cancelado.")
+            pass  # cancelamento deliberado nosso — não marca como falha
         else:
-            self.get_logger().warn(
-                f"[FSM] Goal terminou sem sucesso (status={status})."
-            )
             self._nav_status = "falha"
         self._goal_handle = None
 
@@ -1039,7 +964,6 @@ class ControleRobo(Node):
 
     def _chamar_gripper(self, cli, nome, data):
         if not cli.wait_for_service(timeout_sec=2.0):
-            self.get_logger().error(f"[FSM] Service {nome} indisponível.")
             return
         req = SetBool.Request()
         req.data = bool(data)
@@ -1054,7 +978,6 @@ class ControleRobo(Node):
             (self._fp_global_cli, "global_costmap"),
         ):
             if not cli.wait_for_service(timeout_sec=2.0):
-                self.get_logger().error(f"[FSM] set_parameters de {nome} indisponível.")
                 continue
             req = SetParameters.Request()
             req.parameters = [param]
@@ -1065,9 +988,6 @@ class ControleRobo(Node):
         Usado p/ acelerar a volta à base (caminho já conhecido)."""
         cli = self._ctrl_param_cli
         if not cli.wait_for_service(timeout_sec=2.0):
-            self.get_logger().error(
-                "[FSM] set_parameters do controller_server indisponível."
-            )
             return
 
         def dv(v):
@@ -1081,7 +1001,6 @@ class ControleRobo(Node):
             Parameter(name="FollowPath.max_speed_xy", value=dv(vx)),
         ]
         cli.call_async(req)
-        self.get_logger().info(f"[FSM] Vel. do Nav2 (DWB) ajustada p/ {vx:.2f} m/s.")
 
     def _concluir_missao(self):
         self._cancelar_goal()

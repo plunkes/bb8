@@ -810,5 +810,21 @@
 
   </link>
 
+  <!-- Alto atrito + contato rígido nos dedos/pontas da garra: segura a haste da
+       flag firme, sem escorregar (a flag é leve, então atrito alto resolve). -->
+  <xacro:macro name="grip_friction" params="ref">
+    <gazebo reference="${ref}">
+      <mu1>200.0</mu1>
+      <mu2>200.0</mu2>
+      <kp>1e6</kp>
+      <kd>1.0</kd>
+      <minDepth>0.001</minDepth>
+      <maxVel>0.0</maxVel>
+    </gazebo>
+  </xacro:macro>
+  <xacro:grip_friction ref="left_gripper"/>
+  <xacro:grip_friction ref="right_gripper"/>
+  <xacro:grip_friction ref="left_tip"/>
+  <xacro:grip_friction ref="right_tip"/>
 
 </robot>
