@@ -4,8 +4,8 @@
 
   <!-- Definicao de Algumas Contantes -->
 
-  <xacro:property name="base_width" value="0.31"/> <!-- Largura da base -->
-  <xacro:property name="base_length" value="0.42"/> <!-- Comprimento da base -->
+  <xacro:property name="base_width" value="0.35"/> <!-- Largura da base (corpo quadrado: == base_length) -->
+  <xacro:property name="base_length" value="0.35"/> <!-- Comprimento da base (corpo quadrado: == base_width) -->
   <xacro:property name="base_height" value="0.18"/> <!-- Altura da base -->
 
   <xacro:property name="wheel_radius" value="0.10"/> <!-- Raio da roda -->
@@ -69,7 +69,7 @@
       </geometry>
     </collision>
 
-    <xacro:box_inertia m="4.0" w="${base_width}" d="${base_length}" h="${base_height}"/>
+    <xacro:box_inertia m="2.5" w="${base_width}" d="${base_length}" h="${base_height}"/>
   </link>
 
   <!-- Definindo a Base do Robô (base footprint) -->
@@ -402,7 +402,11 @@
 
   <gazebo>
     <plugin filename="ign_ros2_control-system" name="ign_ros2_control::IgnitionROS2ControlPlugin">
-      <parameters>$(find prm_2026)/config/controller_config.yaml</parameters>
+      <!-- Config DENTRO do bb8_control (repo alvo): gripper_controller com os 5
+           joints que o gripper_server publica (shoulder_pitch, gripper_extension,
+           arm_elbow, right/left_gripper_joint). O config do prm_2026 só tinha 3
+           joints -> update() do JointGroupPositionController dava ERROR (5 != 3). -->
+      <parameters>$(find bb8_control)/config/controller_config.yaml</parameters>
     </plugin>
   </gazebo>
 
@@ -447,7 +451,7 @@
       <ray>
         <scan>
           <horizontal>
-            <samples>1080</samples>
+            <samples>360</samples>
             <resolution>1.000000</resolution>
             <min_angle>0.000000</min_angle>
             <max_angle>6.280000</max_angle>
@@ -455,7 +459,7 @@
         </scan>
         <range>
           <min>0.120000</min>
-          <max>5.0</max>
+          <max>3.5</max>
           <resolution>0.05000</resolution>
         </range>
         <noise>
@@ -497,7 +501,7 @@
     <child link="camera_link"/>
     <!-- Câmera levemente acima do plano do braço retraído (arm_base z=0.05),
          senão o braço recolhido fica na frente da lente. -->
-    <origin xyz="0.215 0 0.085" rpy="0 0 0"/>
+    <origin xyz="0.18 0 0.085" rpy="0 0 0"/>
   </joint>
 
   <link name="camera_frame"/>
@@ -530,24 +534,8 @@
       <enable_metrics>true</enable_metrics>
     </sensor> -->
 
-    <!-- RGB camera – used by bb8_visual_slam package (rtabmap loop closure) -->
-    <sensor name="robot_cam_rgb" type="camera">
-      <topic>robot_cam_rgb</topic>
-      <camera>
-        <horizontal_fov>1.57</horizontal_fov>
-        <image>
-          <width>320</width>
-          <height>240</height>
-        </image>
-        <clip>
-          <near>0.1</near>
-          <far>100</far>
-        </clip>
-      </camera>
-      <always_on>1</always_on>
-      <update_rate>10</update_rate>
-      <visualize>false</visualize>
-    </sensor>
+    <!-- RGB camera REMOVIDA: mantida apenas a câmera semântica (corta 1 render
+         pass por frame). bb8_visual_slam (rtabmap) fica sem fonte RGB. -->
 
     <!-- Insere uma camera com segmentacao semantica -->
     <sensor name="robot_cam" type="segmentation">
@@ -646,7 +634,9 @@
   <joint name="shoulder_pitch" type="revolute">
     <axis xyz="0 -1 0"/>
     <limit effort="50.0" lower="0.0" upper="0.785398" velocity="2.0"/>
-    <origin rpy="0 0 0" xyz="0.2 0 0.05"/>
+    <!-- Realocado para o TOPO do corpo quadrado (z=base_height/2=0.09), recuado
+         do lidar central (x=0.13 > raio lidar 0.05) e à frente p/ alcançar flags. -->
+    <origin rpy="0 0 0" xyz="0.13 0 0.09"/>
     <parent link="base_link"/>
     <child link="arm_base"/>
   </joint>
@@ -662,12 +652,7 @@
         <color rgba="0.11 0.37 0.56 1.0"/>
       </material>
     </visual>
-    <collision>
-      <geometry>
-        <cylinder length="0.04" radius="0.012"/>
-      </geometry>
-      <origin rpy="0 1.57075 0" xyz="0.02 0 0"/>
-    </collision>
+    <!-- Colisão removida: elo estrutural interno, nunca toca nada. Simplifica física. -->
     <xacro:cylinder_inertia m="0.01" r="0.012" h="0.04"/>
   </link>
 
@@ -686,17 +671,12 @@
   <link name="upper_arm">
     <visual>
       <geometry>
-        <cylinder length="0.15" radius="0.01"/>
+        <cylinder length="0.10" radius="0.01"/>
       </geometry>
-      <origin rpy="0 1.57075 0" xyz="0.075 0 0"/>
+      <origin rpy="0 1.57075 0" xyz="0.05 0 0"/>
     </visual>
-    <collision>
-      <geometry>
-        <cylinder length="0.15" radius="0.01"/>
-      </geometry>
-      <origin rpy="0 1.57075 0" xyz="0.075 0 0"/>
-    </collision>
-    <xacro:cylinder_inertia m="0.005" r="0.01" h="0.15"/>
+    <!-- Colisão removida: elo estrutural interno. Simplifica física. -->
+    <xacro:cylinder_inertia m="0.005" r="0.01" h="0.10"/>
   </link>
 
   <!-- Elbow: folds lower arm back toward body (same Z-axis rotation) -->
@@ -704,7 +684,7 @@
     <axis xyz="0 0 1"/>
     <!-- Junta horizontal: amplitude limitada a 90° (-1.5708 a 0). Velocidade 2.0 (desdobra rápido). -->
     <limit effort="50.0" lower="-1.5708" upper="0.0" velocity="2.0"/>
-    <origin xyz="0.15 0 0" rpy="0 0 0"/>
+    <origin xyz="0.10 0 0" rpy="0 0 0"/>
     <parent link="upper_arm"/>
     <child link="gripper_pole"/>
   </joint>
@@ -712,18 +692,14 @@
   <link name="gripper_pole">
     <visual>
       <geometry>
-        <cylinder length="0.2" radius="0.01"/>
+        <cylinder length="0.12" radius="0.01"/>
       </geometry>
-      <origin rpy="0 1.57075 0" xyz="0.1 0 0"/>
+      <origin rpy="0 1.57075 0" xyz="0.06 0 0"/>
     </visual>
 
-    <collision>
-      <geometry>
-        <cylinder length="0.2" radius="0.01"/>
-      </geometry>
-    </collision>
+    <!-- Colisão removida: elo estrutural interno. Simplifica física. -->
 
-    <xacro:cylinder_inertia m="0.01" r="0.01" h="0.2"/>
+    <xacro:cylinder_inertia m="0.01" r="0.01" h="0.12"/>
 
   </link>
 
@@ -731,7 +707,7 @@
     <axis xyz="0 1 0"/>
     <limit effort="100.0" lower="0.0" upper="0.06" velocity="0.25"/>
 
-    <origin rpy="0 0 0" xyz="0.2 0.01 0"/>
+    <origin rpy="0 0 0" xyz="0.12 0.01 0"/>
     <parent link="gripper_pole"/>
     <child link="left_gripper"/>
   </joint>
@@ -783,8 +759,8 @@
   <joint name="right_gripper_joint" type="prismatic">
     <axis xyz="0 1 0"/>
     <limit effort="100.0" lower="-0.06" upper="0" velocity="0.25"/>
-    <origin rpy="0 0 0" xyz="0.2 -0.01 0"/>
-    
+    <origin rpy="0 0 0" xyz="0.12 -0.01 0"/>
+
     <parent link="gripper_pole"/>
     <child link="right_gripper"/>
   </joint>
