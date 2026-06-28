@@ -20,8 +20,11 @@ class VisionProcessorNode(Node):
         self.declare_parameter("min_flag_pixels", 6)
         # Altura real do blob rotulado (mastro+painel) p/ estimar distância (pinhole).
         self.declare_parameter("flag_real_height_m", 0.5)
+        # Label da PLATAFORMA de início (flag_deploy_zone no mundo) p/ o depósito.
+        self.declare_parameter("platform_label_ids", [28])
 
         self._flag_labels = set(self.get_parameter("flag_label_ids").value)
+        self._platform_labels = set(self.get_parameter("platform_label_ids").value)
         hfov_deg = self.get_parameter("camera_hfov_deg").value
         self._hfov = math.radians(hfov_deg)
         self._min_pixels = self.get_parameter("min_flag_pixels").value
@@ -42,6 +45,12 @@ class VisionProcessorNode(Node):
         # centroide pra cima e impede o robô de mirar o centro do mastro.
         self._pole_mode = False
         self.create_subscription(Bool, "/vision/pole_mode", self._cb_pole_mode, 10)
+        # Modo "depósito": detecta a PLATAFORMA de início (label) em vez da flag,
+        # p/ a FSM centrar e subir nela ao depositar a bandeira.
+        self._deposit_mode = False
+        self.create_subscription(
+            Bool, "/vision/deposit_mode", self._cb_deposit_mode, 10
+        )
 
         self._pub_detection = self.create_publisher(
             Pose2D, "/vision/flag_detection", 10
@@ -62,6 +71,14 @@ class VisionProcessorNode(Node):
                 f"[vision] pole_mode={'ON (só metade de baixo)' if msg.data else 'OFF'}"
             )
 
+    def _cb_deposit_mode(self, msg: Bool):
+        if msg.data != self._deposit_mode:
+            self._deposit_mode = msg.data
+            alvo = "PLATAFORMA (depósito)" if msg.data else "flag"
+            self.get_logger().info(
+                f"[vision] deposit_mode={'ON' if msg.data else 'OFF'} -> alvo={alvo}"
+            )
+
     def _cb_labels(self, msg: Image):
         try:
             img = self._decode_label_image(msg)
@@ -74,8 +91,10 @@ class VisionProcessorNode(Node):
         if img is None:
             return
 
-        # Máscara COMPLETA da flag (mastro+painel): usada p/ a ALTURA na distância.
-        flag_mask_full = np.isin(img, list(self._flag_labels))
+        # Alvo ativo: flag (label 25) ou, em deposit_mode, a plataforma (label 28).
+        alvo_labels = self._platform_labels if self._deposit_mode else self._flag_labels
+        # Máscara COMPLETA do alvo: usada p/ a ALTURA na distância.
+        flag_mask_full = np.isin(img, list(alvo_labels))
         # No modo pole, zera a metade de cima -> só o mastro (parte de baixo) conta
         # p/ centroide/bearing, levando o robô ao centro do mastro, não da bandeira.
         flag_mask = flag_mask_full
