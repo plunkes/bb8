@@ -99,8 +99,8 @@ controller_server:
       primary_controller: dwb_core::DWBLocalPlanner
       angular_dist_threshold: 0.785      # >45° desalinhado => gira no lugar primeiro
       forward_sampling_distance: 0.5
-      rotate_to_heading_angular_vel: 1.8
-      max_angular_accel: 4.0
+      rotate_to_heading_angular_vel: 2.5
+      max_angular_accel: 5.0
       simulate_ahead_time: 1.0
       rotate_to_goal_heading: false
       # --- parâmetros do controlador primário (DWB), no mesmo namespace ---
@@ -109,16 +109,16 @@ controller_server:
       min_vel_y: 0.0
       max_vel_x: 1.0 # menos corte de curva a alta velocidade (raspava obstáculo)
       max_vel_y: 0.0
-      max_vel_theta: 2.5 # giro mais rápido p/ virar 180° com facilidade
+      max_vel_theta: 3.5 # giro mais rápido p/ virar 180° com facilidade (era 2.5)
       min_speed_xy: 0.0
       max_speed_xy: 1.0
       min_speed_theta: 0.0
       acc_lim_x: 3.0 # acel/decel maiores p/ parar a tempo a 1.2 m/s
       acc_lim_y: 0.0
-      acc_lim_theta: 4.0 # acel angular alta = entra/sai do giro rápido
+      acc_lim_theta: 5.0 # acel angular alta = entra/sai do giro rápido (era 4.0)
       decel_lim_x: -3.0
       decel_lim_y: 0.0
-      decel_lim_theta: -4.0
+      decel_lim_theta: -5.0
       vx_samples: 15
       vy_samples: 5
       vtheta_samples: 15 # amostragem angular mais fina p/ girar em corredor estreito
@@ -174,7 +174,7 @@ local_costmap:
         enabled: true
         observation_sources: scan
         scan:
-          topic: /scan_filtered
+          topic: /scan
           max_obstacle_height: 2.0
           clearing: true
           marking: true
@@ -213,7 +213,7 @@ global_costmap:
         enabled: true
         observation_sources: scan
         scan:
-          topic: /scan_filtered
+          topic: /scan
           max_obstacle_height: 2.0
           clearing: true
           marking: true

@@ -9,7 +9,7 @@ slam_toolbox:
     odom_frame: odom
     map_frame: map
     base_frame: base_link
-    scan_topic: /scan_filtered  # scan mascarado pelo scan_masker (braço fora do FOV)
+    scan_topic: /scan  # LIDAR no mastro acima do braço: scan nunca é obstruído (sem masker)
     mode: mapping # mapping (constrói) | localization (carrega mapa salvo)
 
     # ---- Geral ----

@@ -25,16 +25,18 @@ from std_msgs.msg import Float64MultiArray
 from std_srvs.srv import SetBool
 
 # Ordem das juntas em /gripper_controller/commands (igual ao controller_config.yaml):
-#   [shoulder_pitch, gripper_extension, arm_elbow, right_gripper_joint, left_gripper_joint]
-# shoulder_pitch (Junta 1): 0.0 = reto p/ frente (nível da flag); 0.785398 = levantado 45°
-#   (nessa posição o braço entra no FOV do LIDAR -> scan_masker mascara o frontal).
-# A flag só é ERGUIDA (ombro 45°) DEPOIS que a garra fecha em volta dela (/gripper/lift).
+#   [shoulder_pitch, right_gripper_joint, left_gripper_joint]
+# shoulder_pitch (braço de junta única, pitch vertical):
+#   3.14159 (180°) = RETRAÍDO deitado p/ trás sobre o robô (postura inicial/navegação)
+#   0.0            = à frente (nível p/ pegar a flag)
+#   0.785398       = erguido 45° (flag levantada; LIDAR fica no mastro acima do braço)
+# A flag só é ERGUIDA (45°) DEPOIS que a garra fecha em volta dela (/gripper/lift).
 # Dedos: [right_gripper_joint, left_gripper_joint]. 0,0 = FECHADO (gap 0.02);
 #        -0.06,0.06 = ABERTO (gap 0.14). (ver limites das juntas no URDF)
-ARM_RETRAIDO = [0.0, -1.5708, -1.5708, 0.0, 0.0]      # ombro baixo, braço recolhido a -90° + garra FECHADA (início)
-ARM_ESTENDIDO_ABERTO = [0.0, 0.0, 0.0, -0.06, 0.06]   # ombro BAIXO, braço a 0° = diretamente à frente, garra ABERTA
-ARM_ESTENDIDO_FECHADO = [0.0, 0.0, 0.0, 0.0, 0.0]     # ombro BAIXO, à frente, garra FECHADA (pega flag)
-ARM_LEVANTADO_FECHADO = [0.785398, 0.0, 0.0, 0.0, 0.0]  # ombro 45°, garra FECHADA (ergue a flag)
+ARM_RETRAIDO = [3.14159, 0.0, 0.0]            # braço 180° (deitado p/ trás) + garra FECHADA (início)
+ARM_ESTENDIDO_ABERTO = [0.0, -0.06, 0.06]     # braço a 0° = diretamente à frente, garra ABERTA
+ARM_ESTENDIDO_FECHADO = [0.0, 0.0, 0.0]       # braço à frente, garra FECHADA (pega flag)
+ARM_LEVANTADO_FECHADO = [0.785398, 0.0, 0.0]  # braço 45°, garra FECHADA (ergue a flag)
 
 
 class GripperServer(Node):

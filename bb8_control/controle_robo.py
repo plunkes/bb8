@@ -96,7 +96,8 @@ GRIPPER_ALIGN_MAX_TICKS = 30  # ~3 s máx girando p/ alinhar (segurança); falho
 GRIPPER_EXTEND_TICKS = 15  # ~1.5 s p/ o braço estender antes de avançar
 GRIPPER_CLOSE_TICKS = 15  # ~1.5 s p/ a garra fechar na flag antes de erguer
 GRIPPER_LIFT_TICKS = 15  # ~1.5 s p/ o ombro erguer a flag antes de retornar
-GRAB_DIST = 0.3  # [m] para de avançar quando a flag está ao alcance do braço
+GRAB_DIST = 0.40  # [m] fecha a garra MAIS CEDO (braço único alcança ~0.39 m): para
+#                  e fecha antes de empurrar/derrubar a flag com o avanço.
 CREEP_VEL = 0.12  # [m/s] avanço lento e final até encostar na flag
 CREEP_MAX_TICKS = 20  # ticks ~3 s máx de avanço final (segurança)
 
@@ -383,6 +384,11 @@ class ControleRobo(Node):
             cmd.linear.x = AVANCO_VEL
             cmd.angular.z = 0.0
         self._pub_cmd.publish(cmd)
+        self.get_logger().info(
+            f"[FSM/BUSCA] /cmd_vel x={cmd.linear.x:.2f} z={cmd.angular.z:.2f} "
+            f"(front={front if front is None else round(front, 2)})",
+            throttle_duration_sec=1.0,
+        )
 
     def _parar(self):
         """Publica velocidade zero (encerra o avanço manual)."""
@@ -474,13 +480,18 @@ class ControleRobo(Node):
         # Só avança quando a flag está centrada; senão gira no lugar p/ centrar.
         cmd.linear.x = VS_VEL if abs(bearing) < VS_ALIGN else 0.0
         self._pub_cmd.publish(cmd)
+        self.get_logger().info(
+            f"[FSM/SERVO] bearing={bearing:.2f} -> /cmd_vel x={cmd.linear.x:.2f} "
+            f"z={cmd.angular.z:.2f}",
+            throttle_duration_sec=1.0,
+        )
 
     def _exec_posicionando(self):
         # Captura em 5 fases: (0) ALINHA girando no lugar (bearing->0) ANTES de mexer
         # o braço, (1) estende o braço no nível da flag, (2) avança até encostar,
         # (3) fecha a garra, (4) ERGUE a flag (ombro 45°) — só depois disso troca o
-        # footprint e retorna à origem. Erguer tira a flag da frente do robô e o
-        # scan_masker mascara o setor frontal (não vira obstáculo).
+        # footprint e retorna à origem. O braço fica sempre abaixo do LIDAR (no
+        # mastro), então erguer a flag não obstrui o scan.
         self._posic_ticks += 1
 
         if self._posic_fase == 0:  # ALINHAR: gira no lugar até centrar o pole da flag
@@ -558,7 +569,7 @@ class ControleRobo(Node):
 
         if self._posic_fase == 4:  # erguendo a flag (ombro 45°)
             if self._posic_ticks >= GRIPPER_LIFT_TICKS:
-                # Flag erguida e fora do FOV frontal (scan_masker mascara): aumenta
+                # Flag erguida (LIDAR no mastro acima do braço, sem obstrução): aumenta
                 # o footprint p/ manobrar e retorna à origem.
                 self._set_footprint(FOOTPRINT_COM_BRACO)
                 self.get_logger().info(

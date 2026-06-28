@@ -39,8 +39,32 @@ class GroundTruthOdomPublisher(Node):
         self.base_frame = self.get_parameter("base_frame").value
         self.odom_frame = self.get_parameter("odom_frame").value
 
+        self._n = 0  # contador de poses recebidas (p/ diagnóstico)
+        # Aviso se nenhuma pose chegar (bridge /model/prm_robot/pose ausente ->
+        # SEM TF odom->base_link -> Nav2 não move o robô).
+        self._warn_timer = self.create_timer(3.0, self._warn_sem_pose)
+        self.get_logger().info(
+            f"[odom_gt] assinando /model/prm_robot/pose; publicando /odom_gt e "
+            f"TF {self.odom_frame}->{self.base_frame}"
+        )
+
+    def _warn_sem_pose(self):
+        if self._n == 0:
+            self.get_logger().warn(
+                "[odom_gt] NENHUMA pose recebida em /model/prm_robot/pose ainda — "
+                "robô não terá TF odom->base_link (verifique a bridge/spawn 'prm_robot').",
+            )
+
     def pose_callback(self, msg: Pose):
         now = self.get_clock().now().to_msg()
+        self._n += 1
+        if self._n == 1:
+            self.get_logger().info("[odom_gt] 1ª pose recebida — publicando TF/odom.")
+        elif self._n % 100 == 0:
+            self.get_logger().info(
+                f"[odom_gt] {self._n} poses | pos=({msg.position.x:.2f}, "
+                f"{msg.position.y:.2f})",
+            )
 
         # Publica a odometria no tópico /odom_gt
         odom_msg = Odometry()
