@@ -51,6 +51,7 @@ class Estado(Enum):
     NAVEGANDO_PARA_BANDEIRA = auto()
     POSICIONANDO_FINAL = auto()
     RETORNANDO_ORIGEM = auto()
+    SUCESSO = auto()  # chegou à base: abaixa o braço, solta a flag e celebra
     BUSCANDO_PAREDE = auto()  # robô encravado em área aberta: avança p/ achar parede
 
 
@@ -322,6 +323,8 @@ class ControleRobo(Node):
             self._exec_posicionando()
         elif e == Estado.RETORNANDO_ORIGEM:
             self._exec_retornando()
+        elif e == Estado.SUCESSO:
+            self._exec_sucesso()
         elif e == Estado.BUSCANDO_PAREDE:
             self._exec_buscando_parede()
 
@@ -362,6 +365,12 @@ class ControleRobo(Node):
             self._nav_status = None
             self._goal_handle = None
             self._enviar_goal_origem()  # (e) volta à pose inicial
+        elif estado == Estado.SUCESSO:
+            self._set_explore(False)
+            self._posic_ticks = 0
+            self._posic_fase = 0
+            self._gripper_lift(False)  # abaixa o ombro (45° -> 0); garra ainda fechada
+            self.get_logger().info("[FSM] Na base — abaixando o braço p/ soltar a flag.")
 
     # ------------------------------------------------------------------ #
     # Estados
@@ -599,7 +608,7 @@ class ControleRobo(Node):
 
     def _exec_retornando(self):
         if self._nav_status == "sucesso":
-            self._concluir_missao()
+            self._set_estado(Estado.SUCESSO)
         elif self._nav_status == "falha":
             self._nav_status = None
             if self._nav_retries < NAV_RETRY_MAX:
@@ -611,6 +620,21 @@ class ControleRobo(Node):
             else:
                 self.get_logger().error("[FSM] Não foi possível retornar à origem.")
                 self._missao_completa = True
+
+    def _exec_sucesso(self):
+        # Chegou à base com a flag erguida: abaixa o braço, solta a flag e celebra.
+        self._posic_ticks += 1
+        if self._posic_fase == 0:  # abaixando o ombro (45° -> 0)
+            if self._posic_ticks >= GRIPPER_LIFT_TICKS:
+                self._gripper_grab(False)  # abre a garra -> solta a bandeira
+                self.get_logger().info("[FSM] Braço abaixado — soltando a bandeira.")
+                self._posic_fase = 1
+                self._posic_ticks = 0
+            return
+        if self._posic_fase == 1:  # garra abrindo (soltando a flag)
+            if self._posic_ticks >= GRIPPER_CLOSE_TICKS:
+                self._concluir_missao()  # mensagem de vitória + missão completa
+            return
 
     # ------------------------------------------------------------------ #
     # Cálculo e envio do goal da bandeira
@@ -878,8 +902,9 @@ class ControleRobo(Node):
         self.get_logger().info(
             "\n"
             "╔══════════════════════════════════════════╗\n"
-            "║            Congratulations!              ║\n"
-            "║  Flag capturada e robô de volta à base!  ║\n"
+            "║          🏁  VITÓRIA!  🏁                 ║\n"
+            "║  Flag capturada, entregue na base e      ║\n"
+            "║  braço abaixado. Missão concluída!       ║\n"
             "╚══════════════════════════════════════════╝"
         )
 
