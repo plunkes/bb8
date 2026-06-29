@@ -19,7 +19,7 @@ controle_robo:
     # --- Critérios p/ ENTRAR em POSICIONANDO_FINAL ---
     flag_area_min_px: 900 # [px] flag grande na imagem => perto
     flag_align_max_deg: 6.0 # |bearing| máx p/ "alinhado"
-    flag_range_max: 0.8 # [m] range LIDAR p/ validar proximidade
+    flag_range_max: 0.9 # [m] range LIDAR p/ validar proximidade
     muito_perto_dist: 0.5 # [m] abaixo disto entra só pelo range (área falha)
     goal_refresh_ticks: 10 # re-mira/re-planeja o goal da flag a cada ~1 s (persistente)
     alcancou_marca_dist: 0.5 # [m] perto da marca da flag E sem ver a flag -> re-explora
@@ -41,7 +41,7 @@ controle_robo:
     grab_dist_tol: 0.05 # [m] banda em torno de grab_dist (dá ré se passar do ponto)
     grab_stall_eps: 0.01 # [m] progresso mín. de rng p/ não contar como "encostou"
     grab_stall_ticks: 6 # ticks alinhado sem aproximar (rng parou) = haste na palma -> fecha
-    re_dist: 0.55 # [m] folga p/ estender/abrir o braço sem bater no pole (>0.4) - fallback maior
+    re_dist: 0.65 # [m] folga p/ estender/abrir o braço sem bater no pole (>0.4) - fallback maior
     vel_retorno: 1.5 # [m/s] velocidade na volta à base (caminho já conhecido)
     retorno_obstacle_scale: 1.0 # peso de obstáculo (DWB) na volta: desvia mais com a flag
     vel_re_retorno: 0.3 # [m/s] ré liberada no DWB na volta (reposiciona com o casco maior)
