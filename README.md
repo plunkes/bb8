@@ -96,6 +96,6 @@ A posição do robô vem de `/odom_gt`, produzido pelo nodo `ground_truth_odomet
 | `/cmd_vel` | Twist | saída controle |
 | `/gripper_controller/commands` | Float64MultiArray | saída controle |
 
-## EM DESENVOLVIMENTO
+## Versão com exploração melhorada
 
-Uma branch do robo que utiliza [frontier exploration](https://github.com/plunkes/bb8/tree/feat/explore_lite) para encontrar a bandeira
+Uma branch do robo que utiliza [frontier exploration](https://github.com/plunkes/bb8/tree/exploracao_autonoma) para encontrar a bandeira
