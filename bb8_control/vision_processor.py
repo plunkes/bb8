@@ -1,4 +1,24 @@
 #!/usr/bin/env python3
+"""Processador de visão: detecta a bandeira (e a plataforma de depósito) na câmera
+de SEGMENTAÇÃO semântica e publica bearing + distância p/ a FSM (controle_robo).
+
+Entrada: /robot_cam/labels_map (sensor_msgs/Image) — cada pixel é o LABEL do objeto
+(não a cor). A flag tem label 25; a plataforma de início (depósito), label 28.
+
+Saídas:
+  /vision/flag_detection (Pose2D)  x=centroide_x[px], y=área[px], theta=1.0 se detectada
+  /vision/flag_bearing   (Float32) [rad] ângulo da flag na câmera (+ = à esquerda)
+  /vision/flag_distance  (Float32) [m] distância por pinhole (altura aparente do blob)
+  /vision/scene_class    (String)  "objective" | "obstacle" | "clear"
+
+Modos (ligados pela FSM):
+  /vision/pole_mode    True -> usa só a metade de BAIXO da imagem (mastro), ignorando
+                       o painel da flag no topo (que puxa o centroide p/ cima).
+  /vision/deposit_mode True -> detecta a PLATAFORMA (label 28) em vez da flag.
+
+Distância pelo modelo pinhole: distance = focal_px * altura_real / altura_px, com
+focal_px = (largura/2) / tan(HFOV/2), calculada no 1º frame a partir da largura.
+"""
 import math
 
 import numpy as np
@@ -12,6 +32,9 @@ from std_msgs.msg import Bool, Float32, String
 
 
 class VisionProcessorNode(Node):
+    """Assina a câmera de labels, segmenta o alvo (flag/plataforma) e publica
+    detecção + bearing + distância p/ a FSM."""
+
     def __init__(self):
         super().__init__("vision_processor")
 
@@ -71,6 +94,7 @@ class VisionProcessorNode(Node):
         self._deposit_mode = msg.data  # ON = detecta a plataforma (label) em vez da flag
 
     def _cb_labels(self, msg: Image):
+        """Segmenta o alvo na imagem de labels e publica detecção/bearing/distância."""
         try:
             img = self._decode_label_image(msg)
         except Exception as exc:
@@ -136,6 +160,8 @@ class VisionProcessorNode(Node):
         self._pub_scene_class.publish(String(data=scene_class))
 
     def _decode_label_image(self, msg: Image):
+        """Converte o Image de labels p/ um array 2D de inteiros (label por pixel),
+        lidando com mono8/mono16/rgb/bgr."""
         enc = msg.encoding.lower()
 
         if enc in ("mono8", "8uc1"):

@@ -49,6 +49,7 @@ from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
 from nav2_msgs.action import NavigateToPose
 from sensor_msgs.msg import LaserScan
+from slam_toolbox.srv import Pause
 from std_msgs.msg import Bool, Float32
 from std_srvs.srv import SetBool
 from tf2_ros import Buffer, TransformListener
@@ -127,6 +128,11 @@ GRAB_STALL_EPS = (
 GRAB_STALL_TICKS = (
     6  # ticks alinhado sem aproximar (rng parou) = haste na palma -> fecha
 )
+# Fallback de MANOBRA na fase 1 (braço estendido): se não dá p/ pegar (overshoot/
+# desalinhado/sem progresso), RECUA até a folga (RE_DIST) re-centrando (dá ré com o
+# braço fora) e re-tenta a garra. Esgotou as manobras -> re-aproxima (NAVEGANDO).
+POSIC_MANOBRAS_MAX = 2  # nº de ré+recentragens na fase 1 antes de desistir e re-aproximar
+MANOBRA_MAX_TICKS = 30  # ticks ~3 s máx recuando/centrando na manobra (segurança)
 VEL_RETORNO = 1.5  # [m/s] velocidade na volta à base (caminho já conhecido)
 RETORNO_OBSTACLE_SCALE = 1.0  # peso de obstáculo (DWB) na volta: mais cuidado c/ a flag
 RE_VEL_RETORNO = 0.3  # [m/s] ré liberada no DWB na volta (reposiciona com o casco maior)
@@ -148,6 +154,13 @@ RETORNO_COST_SCALING = 2.5  # decaimento do custo na volta (default = 4.0; menor
 RETORNO_PATH_SCALE = 64.0  # peso de ficar EM CIMA do caminho (PathAlign/PathDist)
 RETORNO_GOAL_SCALE = 10.0  # peso de puxar p/ o goal (GoalAlign/GoalDist): baixo = não corta
 RETORNO_SIM_TIME = 1.2  # [s] janela de simulação menor: trajetória reta projeta menos -> corta menos
+# Anti-travamento na volta: às vezes o DWB cai num mínimo local (caminho válido + espaço
+# livre, mas comanda /cmd_vel ZERO e o robô não anda). Detecta parado-com-goal-pendente
+# e dá um NUDGE manual (ré + giro) p/ tirar do mínimo; depois re-manda o goal ao Nav2.
+RETORNO_STALL_TICKS = 40  # ticks ~4 s parado (goal pendente) na volta antes do nudge
+RETORNO_NUDGE_TICKS = 15  # ticks ~1.5 s de nudge manual (supera o timeout do velocity_smoother)
+RETORNO_NUDGE_VEL = 0.2  # [m/s] ré do nudge p/ destravar
+RETORNO_NUDGE_W = 0.6  # [rad/s] giro do nudge (muda o heading -> DWB re-planeja de outra pose)
 
 # Fallback de captura: depois de erguer, confirma a flag NA MÃO pela câmera (com a
 # flag presa, ela aparece grande na imagem). Se não confirmar, re-tenta o grab.
@@ -248,6 +261,12 @@ class ControleRobo(Node):
         self._ctrl_param_cli = self.create_client(
             SetParameters, "/controller_server/set_parameters"
         )
+        # Client p/ PAUSAR o slam_toolbox: o mapa já está pronto ao pegar a flag; com o
+        # braço up o scan_masker apaga o setor frontal do LIDAR -> o scan matcher do SLAM
+        # perde geometria e QUEBRA o mapa. Pausa as novas medições na volta (TF segue).
+        self._slam_pause_cli = self.create_client(
+            Pause, "/slam_toolbox/pause_new_measurements"
+        )
 
         # --- TF: usado para transformar a pose da bandeira base_link -> map ---
         self._tf_buffer = Buffer()
@@ -292,6 +311,7 @@ class ControleRobo(Node):
         self._braco_estendido = False  # braço já estendido nesta captura
         self._grab_rng_min = None  # menor rng à flag visto na aproximação final
         self._grab_stall = 0  # ticks alinhado sem aproximar mais (encostou na haste)
+        self._posic_manobras = 0  # ré+recentragens feitas na fase 1 (fallback de manobra)
         self._grab_attempts = 0  # tentativas de grab (fallback de verificação)
         self._plat_visto = False  # plataforma já avistada no depósito
         self._plat_perda = 0  # ticks sem ver a plataforma após avistá-la
@@ -300,6 +320,10 @@ class ControleRobo(Node):
         self._pose_origem = None  # PoseStamped em 'map', gravada ao iniciar
         self._giro_ticks = 0  # ticks girando no lugar p/ encarar a base (ALINHANDO_RETORNO)
         self._retorno_forward_only = True  # True = volta SÓ de frente; False = ré liberada
+        self._slam_paused = False  # já pausou o slam_toolbox (toggle: chama 1x só)
+        self._retorno_stuck_ref = None  # pose de referência p/ detectar travamento na volta
+        self._retorno_stuck_ticks = 0  # ticks quase parado (goal pendente) na volta
+        self._retorno_nudge_ticks = 0  # ticks restantes do nudge manual (ré+giro)
 
         # Acompanhamento do goal do Nav2
         self._goal_handle = None
@@ -324,7 +348,7 @@ class ControleRobo(Node):
         global GOAL_REFRESH_TICKS, VS_DIST, VS_KP, VS_MAX_W, VS_VEL, VS_ALIGN
         global ALCANCOU_MARCA_DIST
         global GRIPPER_EXTEND_TICKS, GRIPPER_CLOSE_TICKS, GRIPPER_LIFT_TICKS
-        global GRAB_DIST, CREEP_VEL, CREEP_MAX_TICKS
+        global GRAB_DIST, CREEP_VEL, CREEP_MAX_TICKS, POSIC_MANOBRAS_MAX, MANOBRA_MAX_TICKS
         global STUCK_MIN_MOVE, STUCK_MAX_TICKS, AVANCO_MAX_TICKS, AVANCO_VEL
         global AVANCO_FRONT_SECTOR, AVANCO_SAFE_DIST, AVANCO_GIRO, FREQ_CONTROLE
         global GRAB_DIST_TOL, VEL_RETORNO, RE_DIST, GRAB_STALL_EPS, GRAB_STALL_TICKS
@@ -333,6 +357,7 @@ class ControleRobo(Node):
         global ALIGN_RETORNO_TOL, GIRO_RETORNO_W, GIRO_RETORNO_MAX_TICKS
         global RETORNO_INFLATION_RADIUS, RETORNO_COST_SCALING
         global RETORNO_PATH_SCALE, RETORNO_GOAL_SCALE, RETORNO_SIM_TIME
+        global RETORNO_STALL_TICKS, RETORNO_NUDGE_TICKS, RETORNO_NUDGE_VEL, RETORNO_NUDGE_W
         global DEPOSIT_STANDOFF, DEPOSIT_VEL, DEPOSIT_MAX_TICKS, DEPOSIT_PERDA_TICKS
         global DEPOSIT_DROP_DIST
 
@@ -368,6 +393,8 @@ class ControleRobo(Node):
         GRAB_DIST = num("grab_dist", GRAB_DIST)
         CREEP_VEL = num("creep_vel", CREEP_VEL)
         CREEP_MAX_TICKS = num("creep_max_ticks", CREEP_MAX_TICKS)
+        POSIC_MANOBRAS_MAX = num("posic_manobras_max", POSIC_MANOBRAS_MAX)
+        MANOBRA_MAX_TICKS = num("manobra_max_ticks", MANOBRA_MAX_TICKS)
         GRAB_DIST_TOL = num("grab_dist_tol", GRAB_DIST_TOL)
         VEL_RETORNO = num("vel_retorno", VEL_RETORNO)
         RETORNO_OBSTACLE_SCALE = num("retorno_obstacle_scale", RETORNO_OBSTACLE_SCALE)
@@ -384,6 +411,10 @@ class ControleRobo(Node):
         RETORNO_PATH_SCALE = num("retorno_path_scale", RETORNO_PATH_SCALE)
         RETORNO_GOAL_SCALE = num("retorno_goal_scale", RETORNO_GOAL_SCALE)
         RETORNO_SIM_TIME = num("retorno_sim_time", RETORNO_SIM_TIME)
+        RETORNO_STALL_TICKS = num("retorno_stall_ticks", RETORNO_STALL_TICKS)
+        RETORNO_NUDGE_TICKS = num("retorno_nudge_ticks", RETORNO_NUDGE_TICKS)
+        RETORNO_NUDGE_VEL = num("retorno_nudge_vel", RETORNO_NUDGE_VEL)
+        RETORNO_NUDGE_W = num("retorno_nudge_w", RETORNO_NUDGE_W)
         RE_DIST = num("re_dist", RE_DIST)
         GRAB_STALL_EPS = num("grab_stall_eps", GRAB_STALL_EPS)
         GRAB_STALL_TICKS = num("grab_stall_ticks", GRAB_STALL_TICKS)
@@ -489,6 +520,7 @@ class ControleRobo(Node):
             self._braco_estendido = False
             self._grab_rng_min = None
             self._grab_stall = 0
+            self._posic_manobras = 0
         elif estado == Estado.ALINHANDO_RETORNO:
             self._set_explore(False)  # pausa o m-explore (libera o /cmd_vel p/ girar)
             self._giro_ticks = 0
@@ -498,6 +530,9 @@ class ControleRobo(Node):
             self._nav_status = None
             self._goal_handle = None
             self._retorno_refresh = 0
+            self._retorno_stuck_ref = None  # reinicia o detector de travamento
+            self._retorno_stuck_ticks = 0
+            self._retorno_nudge_ticks = 0
             # Encarando a base (girou): volta SÓ de frente (min_vel_x=0) -> rápida.
             # Não conseguiu girar: libera a ré (min_vel_x<0) p/ voltar/reposicionar.
             min_vx = 0.0 if self._retorno_forward_only else -RE_VEL_RETORNO
@@ -506,6 +541,7 @@ class ControleRobo(Node):
             # mascarado) -> desvia com margem e segue o caminho global (não corta).
             self._set_inflation(RETORNO_INFLATION_RADIUS, RETORNO_COST_SCALING)
             self._set_static_layer(True)
+            self._pausar_slam()  # mapa pronto: congela o SLAM (braço up mascara o scan)
             self._enviar_goal_origem()  # volta p/ perto da base (standoff)
         elif estado == Estado.DEPOSITANDO:
             self._set_explore(False)
@@ -703,10 +739,25 @@ class ControleRobo(Node):
             cmd.linear.x = 0.0  # na banda correta
         return cmd
 
+    def _iniciar_manobra(self):
+        """Entra na MANOBRA (fase 5) da captura: recua re-centrando e re-tenta a garra.
+        Conta as manobras; esgotou (POSIC_MANOBRAS_MAX) -> desiste e re-aproxima do zero
+        (NAVEGANDO). Mantém o braço estendido (recua/manobra COM o braço fora)."""
+        self._parar()
+        self._posic_manobras += 1
+        if self._posic_manobras > POSIC_MANOBRAS_MAX:
+            self._set_estado(Estado.NAVEGANDO_PARA_BANDEIRA)
+            return
+        self._grab_rng_min = None
+        self._grab_stall = 0
+        self._posic_fase = 5
+        self._posic_ticks = 0
+
     def _exec_posicionando(self):
-        # Captura em 5 fases:
+        # Captura em fases:
         #   0 = recua até a folga (RE_DIST) e ESTENDE o braço (garra aberta);
         #   1 = avança/centra na haste e FECHA a garra (na_dist OU encostou);
+        #   5 = MANOBRA (fallback da fase 1): recua re-centrando e re-tenta a garra;
         #   2 = espera a garra fechar e ERGUE a flag (ombro 45°);
         #   3 = espera erguer; volta a câmera p/ a imagem inteira (conferir);
         #   4 = CONFIRMA a flag na mão (grande na câmera) -> RETORNANDO; senão re-tenta.
@@ -763,15 +814,20 @@ class ControleRobo(Node):
             else:
                 self._grab_stall = 0
             encostou = alinhado and self._grab_stall >= GRAB_STALL_TICKS
+            # Perto demais e NÃO alinhado: não dá p/ pegar (empurraria a haste torto) e
+            # não dá p/ centrar girando tão perto -> precisa RECUAR. Overshoot/encravado.
+            overshoot = (
+                rng is not None and rng < GRAB_DIST - GRAB_DIST_TOL and not alinhado
+            )
             if (na_dist or encostou) and alinhado:
                 self._parar()
                 self._gripper_grab(True)  # fecha a garra na bandeira
                 self._posic_fase = 2
                 self._posic_ticks = 0
-            elif self._posic_ticks > CREEP_MAX_TICKS:
-                # Não conseguiu posicionar a tempo: NÃO pega torto — re-aproxima.
-                self._parar()
-                self._set_estado(Estado.NAVEGANDO_PARA_BANDEIRA)
+            elif overshoot or self._posic_ticks > CREEP_MAX_TICKS:
+                # Não dá p/ pegar agora: MANOBRA — recua até a folga re-centrando e
+                # re-tenta (em vez de re-aproximar do zero). Esgotou -> NAVEGANDO.
+                self._iniciar_manobra()
             else:
                 # Avança RETO (sem ré) centrando o pole, até rng <= grab_dist.
                 cmd = Twist()
@@ -779,6 +835,27 @@ class ControleRobo(Node):
                     cmd.angular.z = max(-VS_MAX_W, min(VS_MAX_W, VS_KP * bearing))
                 cmd.linear.x = CREEP_VEL if alinhado else 0.0
                 self._pub_cmd.publish(cmd)
+            return
+
+        if self._posic_fase == 5:  # MANOBRA: recua à folga (RE_DIST) re-centrando e re-tenta
+            rng = self._estimar_range_flag()
+            recentrado = (
+                self._bandeira_detectada and abs(self._flag_bearing) <= VS_ALIGN
+            )
+            # Recuou até a folga e re-centrou -> nova tentativa de garra (fase 1).
+            if rng is not None and rng >= RE_DIST - GRAB_DIST_TOL and recentrado:
+                self._grab_rng_min = None
+                self._grab_stall = 0
+                self._posic_fase = 1
+                self._posic_ticks = 0
+                return
+            # Não recuou/centrou a tempo (ou perdeu a flag): re-aproxima do zero.
+            if self._posic_ticks > MANOBRA_MAX_TICKS:
+                self._parar()
+                self._set_estado(Estado.NAVEGANDO_PARA_BANDEIRA)
+                return
+            # Dá RÉ + centra com o braço FORA (_ajuste_fino recua se rng < RE_DIST).
+            self._pub_cmd.publish(self._ajuste_fino(RE_DIST, rng, CREEP_VEL))
             return
 
         if self._posic_fase == 2:  # garra fechando
@@ -855,6 +932,21 @@ class ControleRobo(Node):
         self._pub_cmd.publish(cmd)
 
     def _exec_retornando(self):
+        # NUDGE em andamento (destravando): publica ré+giro manual até zerar; ao fim
+        # re-manda o goal p/ o Nav2 retomar de uma pose nova.
+        if self._retorno_nudge_ticks > 0:
+            self._retorno_nudge_ticks -= 1
+            cmd = Twist()
+            cmd.linear.x = -RETORNO_NUDGE_VEL
+            cmd.angular.z = RETORNO_NUDGE_W
+            self._pub_cmd.publish(cmd)
+            if self._retorno_nudge_ticks == 0:
+                self._parar()
+                self._retorno_stuck_ref = None  # zera o detector pós-nudge
+                self._retorno_stuck_ticks = 0
+                self._enviar_goal_origem()  # retoma a navegação ao Nav2
+            return
+
         if self._nav_status == "sucesso":
             self._set_estado(Estado.DEPOSITANDO)
             return
@@ -872,6 +964,33 @@ class ControleRobo(Node):
         # FollowPath nunca chega a seguir o caminho (timeout de ack). A própria BT já
         # re-planeja o caminho a 1 Hz (RateController) contra a costmap/footprint
         # atuais; o goal fixo é enviado UMA vez (na entrada) e o Nav2 cuida do resto.
+
+        # FALLBACK anti-travamento: o DWB às vezes trava num mínimo local (caminho válido,
+        # espaço livre, mas /cmd_vel = 0). Parado por RETORNO_STALL_TICKS com goal pendente
+        # -> cancela o goal e dá um NUDGE manual (ré+giro) p/ tirar do mínimo.
+        if self._detectar_travado_retorno():
+            self.get_logger().warn("[FSM] volta travada (DWB em zero) -> nudge manual")
+            self._cancelar_goal()
+            self._retorno_nudge_ticks = RETORNO_NUDGE_TICKS
+
+    def _detectar_travado_retorno(self):
+        """True se o robô mal se moveu por RETORNO_STALL_TICKS ticks na volta (DWB
+        comandando zero com goal pendente). Mesma ideia do _detectar_encravado."""
+        pos = self._pose_atual_em_map()
+        if pos is None:
+            return False
+        if self._retorno_stuck_ref is None:
+            self._retorno_stuck_ref = pos
+            self._retorno_stuck_ticks = 0
+            return False
+        dx = pos.pose.position.x - self._retorno_stuck_ref.pose.position.x
+        dy = pos.pose.position.y - self._retorno_stuck_ref.pose.position.y
+        if math.hypot(dx, dy) > STUCK_MIN_MOVE:
+            self._retorno_stuck_ref = pos  # andou: reseta a referência
+            self._retorno_stuck_ticks = 0
+            return False
+        self._retorno_stuck_ticks += 1
+        return self._retorno_stuck_ticks > RETORNO_STALL_TICKS
 
     def _exec_sucesso(self):
         # Chegou à base com a flag erguida: abaixa o braço, solta a flag e celebra.
@@ -1218,6 +1337,18 @@ class ControleRobo(Node):
         req = SetParameters.Request()
         req.parameters = [param]
         cli.call_async(req)
+
+    def _pausar_slam(self):
+        """Pausa as novas medições do slam_toolbox (toggle, chamado 1x). O mapa já está
+        pronto ao pegar a flag; com o braço up o scan frontal é mascarado e o scan
+        matcher quebraria o mapa na volta. Pausado, o SLAM ainda publica o TF map->odom;
+        o depósito usa a TF da origem + visão (não o mapa)."""
+        if self._slam_paused:
+            return
+        if not self._slam_pause_cli.wait_for_service(timeout_sec=2.0):
+            return
+        self._slam_paused = True
+        self._slam_pause_cli.call_async(Pause.Request())
 
     def _concluir_missao(self):
         self._cancelar_goal()

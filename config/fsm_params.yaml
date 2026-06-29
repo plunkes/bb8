@@ -38,6 +38,8 @@ controle_robo:
     grab_dist: 0.41 # [m] fecha a garra (na_dist): >platô da haste (~0.36) p/ parar ANTES de empurrar
     creep_vel: 0.12 # [m/s] avanço final (posiciona p/ pegar mais rápido; na_dist para antes)
     creep_max_ticks: 20 # teto do avanço final (segurança)
+    posic_manobras_max: 2 # ré+recentragens na fase 1 (braço fora) antes de re-aproximar do zero
+    manobra_max_ticks: 30 # ticks (~3 s) máx recuando/centrando na manobra antes de re-aproximar
     grab_dist_tol: 0.05 # [m] banda em torno de grab_dist (dá ré se passar do ponto)
     grab_stall_eps: 0.01 # [m] progresso mín. de rng p/ não contar como "encostou"
     grab_stall_ticks: 6 # ticks alinhado sem aproximar (rng parou) = haste na palma -> fecha
@@ -54,6 +56,10 @@ controle_robo:
     retorno_path_scale: 64.0 # DWB na volta: peso de SEGUIR o caminho (Path*); default exploração 32
     retorno_goal_scale: 10.0 # DWB na volta: peso de puxar p/ o goal (Goal*); baixo = não corta (default 24)
     retorno_sim_time: 1.2 # [s] DWB na volta: janela de sim menor p/ cortar menos (default 1.5)
+    retorno_stall_ticks: 40 # ticks (~4 s) parado c/ goal pendente na volta -> nudge anti-travamento
+    retorno_nudge_ticks: 15 # ticks (~1.5 s) de nudge manual (ré+giro) p/ destravar o DWB
+    retorno_nudge_vel: 0.2 # [m/s] ré do nudge de destravamento
+    retorno_nudge_w: 0.6 # [rad/s] giro do nudge (muda heading -> DWB re-planeja de outra pose)
 
     # --- Fallback: confirma a flag NA MÃO pela câmera após erguer (senão re-tenta) ---
     verif_area_min: 800 # [px] área mínima da flag na câmera p/ confirmar que está na mão
@@ -61,7 +67,7 @@ controle_robo:
     grab_attempts_max: 3 # re-grabs antes de seguir p/ a base assim mesmo (best effort)
 
     # --- Depósito da flag na plataforma de início (label 28, visão) ---
-    deposit_standoff: 0.5 # [m] para a esta distância da origem (plataforma à frente)
+    deposit_standoff: 1.0 # [m] para a esta distância da origem (plataforma à frente)
     deposit_vel: 0.2 # [m/s] avanço lento centrando na plataforma
     deposit_max_ticks: 60 # ticks ~8 s máx (fallback) p/ subir na plataforma
     deposit_perda_ticks: 8 # ticks sem ver a plataforma (após vê-la) = está por cima
