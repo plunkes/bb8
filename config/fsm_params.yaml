@@ -25,7 +25,7 @@ controle_robo:
     alcancou_marca_dist: 0.5 # [m] perto da marca da flag E sem ver a flag -> re-explora
 
     # --- Servo visual (aproximação final, sem Nav2) ---
-    vs_dist: 1.0 # [m] abaixo disto assume o servo visual
+    vs_dist: 0.8 # [m] raio de ativação da captura: abaixo disto para de recalcular e assume o servo visual
     vs_kp: 1.5 # ganho de giro [rad/s por rad de bearing]
     vs_max_w: 1.2 # [rad/s] giro máximo
     vs_vel: 0.30 # [m/s] avanço quando centrada (posiciona p/ pegar mais rápido)

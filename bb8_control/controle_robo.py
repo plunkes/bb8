@@ -22,7 +22,10 @@ Services (/gripper/extend, /gripper/grab, /gripper/lift) no gripper_server.
 """
 
 import math
+import os
 from enum import Enum, auto
+
+from ament_index_python.packages import get_package_share_directory
 
 import rclpy
 from rclpy.action import ActionClient
@@ -95,7 +98,7 @@ ALCANCOU_MARCA_DIST = 0.5  # [m] perto da marca da flag E sem ver a flag -> re-e
 
 # Servo visual (aproximação final): assume o controle quando a flag está perto,
 # mantendo-a no centro da câmera. Evita o Nav2 girar/colapsar o goal de perto.
-VS_DIST = 1.0  # [m] abaixo disto, controle visual simples em vez de goals do Nav2
+VS_DIST = 1.2  # [m] raio de ativação da captura: abaixo disto para de recalcular e assume o servo visual
 VS_KP = 1.5  # ganho de giro [rad/s por rad de bearing]
 VS_MAX_W = 1.2  # [rad/s] giro máximo no servo
 VS_VEL = 0.30  # [m/s] avanço quando a flag está centrada
@@ -232,6 +235,16 @@ class ControleRobo(Node):
 
         # --- Action client do Nav2 ---
         self._nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
+
+        # BT com ré (BackUp) p/ a volta à base. Os goals da exploração/flag usam a
+        # BT default (navigate_no_backup.xml, sem ré: a câmera precisa ver a flag);
+        # os goals de retorno pedem ESTA via goal.behavior_tree (footprint grande
+        # carregando a flag -> precisa de ré p/ sair de quina sem girar a haste).
+        self._bt_com_backup = os.path.join(
+            get_package_share_directory("bb8_control"),
+            "behavior_trees",
+            "navigate_with_backup.xml",
+        )
 
         # --- Estado interno ---
         self._estado = Estado.INICIALIZANDO
@@ -537,25 +550,25 @@ class ControleRobo(Node):
         self._pub_cmd.publish(Twist())
 
     def _exec_navegando(self):
-        # Vê a flag -> MARCA/atualiza a posição dela no 'map'. De longe marca a fração
-        # alcançável do trajeto; ao chegar perto, refina p/ a flag em si (mais acurada).
-        if self._bandeira_detectada:
+        rng = self._estimar_range_flag()
+        perto = rng is not None and rng <= VS_DIST  # dentro do raio de captura
+
+        # Vê a flag e AINDA LONGE -> MARCA/atualiza a posição dela no 'map' (Nav2 leva
+        # p/ perto). PERTO: para de recalcular — o recalc contínuo mexia o goal a cada
+        # tick e mantinha o Nav2 replanejando, impedindo o robô de estabilizar.
+        if self._bandeira_detectada and not perto:
             marca = self._calcular_marca_flag()
             if marca is not None:
                 self._flag_goal = marca
                 self._marca_atualizada = True
 
-        # 1) Pronto p/ pegar (alinhado + perto) -> captura.
-        if self._pronto_para_pegar():
+        # 1) PERTO da flag (visível dentro do raio de captura) -> SAI de NAVEGANDO p/
+        #    POSICIONANDO, que faz o ajuste fino (centra/recua/avança) e pega. Servoar
+        #    aqui DENTRO mantinha o robô em NAVEGANDO: ele passava da flag a perdia.
+        #    O _pronto_para_pegar (alinhado + bem perto) só antecipa a mesma transição.
+        if self._pronto_para_pegar() or (self._bandeira_detectada and perto):
             self._cancelar_goal()
             self._set_estado(Estado.POSICIONANDO_FINAL)
-            return
-
-        # 2) Flag VISÍVEL e perto -> servo visual direto (centra na haste).
-        rng = self._estimar_range_flag()
-        if self._bandeira_detectada and rng is not None and rng <= VS_DIST:
-            self._cancelar_goal()
-            self._servo_visual()
             return
 
         # 3) Sem marca ainda: se sumiu de vista por tempo demais, re-explora.
@@ -769,12 +782,12 @@ class ControleRobo(Node):
             else:
                 self._missao_completa = True
             return
-        # Re-planejamento CONTÍNUO: re-envia o goal de volta periodicamente p/ o Nav2
-        # recalcular a trajetória com a costmap + footprint (retangular) atuais.
-        self._retorno_refresh += 1
-        if self._retorno_refresh >= RETORNO_REFRESH_TICKS and self._return_goal is not None:
-            self._retorno_refresh = 0
-            self._enviar_pose_nav(self._return_goal)
+        # NÃO re-enviar o goal periodicamente: cada re-envio preempta o bt_navigator
+        # (reinicia ComputePath+FollowPath e ZERA o progress_checker), então o robô
+        # nunca acumula os ~10 s sem progresso que disparam o recovery (BackUp) e o
+        # FollowPath nunca chega a seguir o caminho (timeout de ack). A própria BT já
+        # re-planeja o caminho a 1 Hz (RateController) contra a costmap/footprint
+        # atuais; o goal fixo é enviado UMA vez (na entrada) e o Nav2 cuida do resto.
 
     def _exec_sucesso(self):
         # Chegou à base com a flag erguida: abaixa o braço, solta a flag e celebra.
@@ -864,16 +877,19 @@ class ControleRobo(Node):
         pose.pose.orientation.z = math.sin(yaw / 2.0)
         pose.pose.orientation.w = math.cos(yaw / 2.0)
         self._return_goal = pose  # guarda p/ re-enviar (re-planejamento contínuo)
-        self._enviar_pose_nav(pose)
+        self._enviar_pose_nav(pose, bt=self._bt_com_backup)  # volta com ré liberada
 
-    def _enviar_pose_nav(self, pose):
-        """Envia uma PoseStamped (frame 'map') como goal NavigateToPose."""
+    def _enviar_pose_nav(self, pose, bt=""):
+        """Envia uma PoseStamped (frame 'map') como goal NavigateToPose. `bt` =
+        caminho de uma BT específica (goal.behavior_tree); vazio usa a default
+        (navigate_no_backup.xml). A volta passa self._bt_com_backup p/ liberar a ré."""
         if not self._nav_client.server_is_ready():
             self._nav_status = "falha"
             return
         goal = NavigateToPose.Goal()
         goal.pose = pose
         goal.pose.header.stamp = self.get_clock().now().to_msg()
+        goal.behavior_tree = bt
         self._nav_status = "pendente"
         send_future = self._nav_client.send_goal_async(goal)
         send_future.add_done_callback(self._on_goal_response)

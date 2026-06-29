@@ -274,7 +274,10 @@ velocity_smoother:
     scale_velocities: false
     feedback: OPEN_LOOP
     max_velocity: [1.6, 0.0, 2.5] # teto: deixa a volta à base ir a 1.5 (DWB sobe em runtime)
-    min_velocity: [0.0, 0.0, -2.5] # sem ré; giro livre nos 2 sentidos
+    # Piso de vx NEGATIVO p/ a ré PASSAR pelo smoother: o DWB já só comanda ré na
+    # volta (min_vel_x<0 setado em runtime); na exploração min_vel_x=0 -> nunca dá ré.
+    # Com 0.0 aqui o smoother CORTAVA a ré do DWB p/ 0 e o robô não reposicionava.
+    min_velocity: [-0.5, 0.0, -2.5] # ré liberada no smoother; giro livre nos 2 sentidos
     max_accel: [3.0, 0.0, 4.0]
     max_decel: [-3.0, 0.0, -4.0]
     odom_topic: /odom_gt
