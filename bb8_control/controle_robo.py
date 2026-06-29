@@ -90,7 +90,8 @@ FLAG_ALIGN_MAX = math.radians(6.0)  # [rad] |bearing| máximo => alinhado com a 
 FLAG_RANGE_MAX = 1.0  # [m] range do LIDAR até a flag p/ validar proximidade
 MUITO_PERTO_DIST = 0.6  # [m] abaixo disto entra na captura só pelo range (a área da
 #                         imagem falha de tão perto p/ validar proximidade)
-GOAL_REFRESH_TICKS = 10  # re-mira o goal de aproximação a cada ~1 s (rastreia a flag)
+GOAL_REFRESH_TICKS = 10  # re-mira/re-planeja o goal da flag a cada ~1 s (rastreia a flag)
+ALCANCOU_MARCA_DIST = 0.5  # [m] perto da marca da flag E sem ver a flag -> re-explora
 
 # Servo visual (aproximação final): assume o controle quando a flag está perto,
 # mantendo-a no centro da câmera. Evita o Nav2 girar/colapsar o goal de perto.
@@ -242,8 +243,9 @@ class ControleRobo(Node):
         self._flag_distance = 0.0  # [m] distância estimada pela câmera (pinhole)
         self._flag_detec_ticks = 0  # ticks consecutivos COM detecção
         self._flag_perda_ticks = 0  # ticks consecutivos SEM detecção
-        self._goal_refresh_ticks = 0  # contador p/ re-mirar o goal de aproximação
-        self._servo_ativo = False  # latch: controle visual assumiu (Nav2 desligado)
+        self._goal_refresh_ticks = 0  # contador p/ re-mirar/re-planejar o goal da flag
+        self._flag_goal = None  # PoseStamped (map) marcada da flag (navega persistente)
+        self._marca_atualizada = False  # a marca da flag mudou -> re-enviar o goal
 
         # Detecção de "encravado" + avanço à procura de parede
         self._stuck_ref = None  # PoseStamped de referência p/ medir deslocamento
@@ -285,6 +287,7 @@ class ControleRobo(Node):
         global RANGE_FALLBACK, NAV_RETRY_MAX, OBSTACULO_TOL
         global FLAG_AREA_MIN_PX, FLAG_ALIGN_MAX, FLAG_RANGE_MAX, MUITO_PERTO_DIST
         global GOAL_REFRESH_TICKS, VS_DIST, VS_KP, VS_MAX_W, VS_VEL, VS_ALIGN
+        global ALCANCOU_MARCA_DIST
         global GRIPPER_EXTEND_TICKS, GRIPPER_CLOSE_TICKS, GRIPPER_LIFT_TICKS
         global GRAB_DIST, CREEP_VEL, CREEP_MAX_TICKS
         global STUCK_MIN_MOVE, STUCK_MAX_TICKS, AVANCO_MAX_TICKS, AVANCO_VEL
@@ -315,6 +318,7 @@ class ControleRobo(Node):
         FLAG_RANGE_MAX = num("flag_range_max", FLAG_RANGE_MAX)
         MUITO_PERTO_DIST = num("muito_perto_dist", MUITO_PERTO_DIST)
         GOAL_REFRESH_TICKS = num("goal_refresh_ticks", GOAL_REFRESH_TICKS)
+        ALCANCOU_MARCA_DIST = num("alcancou_marca_dist", ALCANCOU_MARCA_DIST)
         VS_DIST = num("vs_dist", VS_DIST)
         VS_KP = num("vs_kp", VS_KP)
         VS_MAX_W = num("vs_max_w", VS_MAX_W)
@@ -428,8 +432,8 @@ class ControleRobo(Node):
             self._nav_status = None
             self._goal_handle = None
             self._goal_refresh_ticks = 0
-            self._servo_ativo = False  # começa sob controle do Nav2
-            self._enviar_goal_bandeira()
+            self._flag_goal = None  # marca (re)calculada no _exec ao ver a flag
+            self._marca_atualizada = False
         elif estado == Estado.POSICIONANDO_FINAL:
             self._set_explore(False)
             self._posic_ticks = 0
@@ -533,47 +537,70 @@ class ControleRobo(Node):
         self._pub_cmd.publish(Twist())
 
     def _exec_navegando(self):
-        # 1) Chegou? alinhado + flag grande na imagem + perto pelo LIDAR -> pega.
+        # Vê a flag -> MARCA/atualiza a posição dela no 'map'. De longe marca a fração
+        # alcançável do trajeto; ao chegar perto, refina p/ a flag em si (mais acurada).
+        if self._bandeira_detectada:
+            marca = self._calcular_marca_flag()
+            if marca is not None:
+                self._flag_goal = marca
+                self._marca_atualizada = True
+
+        # 1) Pronto p/ pegar (alinhado + perto) -> captura.
         if self._pronto_para_pegar():
             self._cancelar_goal()
             self._set_estado(Estado.POSICIONANDO_FINAL)
             return
 
-        # 2) Perdeu a bandeira de vista por tempo demais -> volta a explorar.
-        if self._flag_perda_ticks > FLAG_PERDA_MAX:
-            self._cancelar_goal()
-            self._set_estado(Estado.EXPLORANDO)
-            return
-
-        # 2b) Perto (<VS_DIST): assume o CONTROLE VISUAL SIMPLES e o mantém travado
-        #     (latch). O Nav2 manda paths confusos de perto; uma vez que o servo
-        #     assume, não devolvemos o controle ao Nav2 (só sai daqui se pegar a
-        #     flag ou perdê-la de vista por tempo demais, tratado acima).
+        # 2) Flag VISÍVEL e perto -> servo visual direto (centra na haste).
         rng = self._estimar_range_flag()
-        if self._servo_ativo or (rng is not None and rng <= VS_DIST):
-            self._servo_ativo = True  # latch: servo visual assume, Nav2 desligado
+        if self._bandeira_detectada and rng is not None and rng <= VS_DIST:
             self._cancelar_goal()
             self._servo_visual()
             return
 
-        # 3) Goal de aproximação falhou -> retry; se esgotar, re-explora.
-        if self._nav_status == "falha":
-            self._nav_status = None
-            if self._nav_retries < NAV_RETRY_MAX and self._bandeira_detectada:
-                self._nav_retries += 1
-                self._enviar_goal_bandeira()
-            else:
-                self._cancelar_goal()
+        # 3) Sem marca ainda: se sumiu de vista por tempo demais, re-explora.
+        if self._flag_goal is None:
+            if self._flag_perda_ticks > FLAG_PERDA_MAX:
                 self._set_estado(Estado.EXPLORANDO)
             return
 
-        # 4) Persegue: re-mira o goal periodicamente p/ rastrear a flag enquanto
-        #    se aproxima (o bearing/range vão refinando à medida que chega perto).
+        # 4) Goal falhou -> retry; se esgotar, larga a marca e re-explora.
+        if self._nav_status == "falha":
+            self._nav_status = None
+            if self._nav_retries < NAV_RETRY_MAX:
+                self._nav_retries += 1
+                self._enviar_pose_nav(self._flag_goal)
+            else:
+                self._cancelar_goal()
+                self._flag_goal = None
+                self._set_estado(Estado.EXPLORANDO)
+            return
+
+        # 5) PERSISTENTE: navega até a MARCA. Re-envia o goal quando a marca é
+        #    atualizada (flag mais perto = mais acurada) e periodicamente (re-plan).
         self._goal_refresh_ticks += 1
-        if self._goal_refresh_ticks >= GOAL_REFRESH_TICKS:
+        if (
+            self._marca_atualizada
+            or self._nav_status is None
+            or self._goal_refresh_ticks >= GOAL_REFRESH_TICKS
+        ):
+            self._marca_atualizada = False
             self._goal_refresh_ticks = 0
-            if self._bandeira_detectada:
-                self._enviar_goal_bandeira()
+            self._enviar_pose_nav(self._flag_goal)
+
+        # 6) Chegou perto da MARCA e a flag não apareceu por tempo demais -> não está
+        #    lá (erro/moveu): larga a marca e re-explora.
+        pos = self._pose_atual_em_map()
+        if pos is not None:
+            dx = pos.pose.position.x - self._flag_goal.pose.position.x
+            dy = pos.pose.position.y - self._flag_goal.pose.position.y
+            if (
+                math.hypot(dx, dy) <= ALCANCOU_MARCA_DIST
+                and self._flag_perda_ticks > FLAG_PERDA_MAX
+            ):
+                self._cancelar_goal()
+                self._flag_goal = None
+                self._set_estado(Estado.EXPLORANDO)
 
     def _pronto_para_pegar(self):
         """True se a flag está centrada na câmera e perto o suficiente p/ pegar."""
@@ -798,35 +825,18 @@ class ControleRobo(Node):
     # ------------------------------------------------------------------ #
     # Cálculo e envio do goal da bandeira
     # ------------------------------------------------------------------ #
-    def _enviar_goal_bandeira(self):
-        # Tenta o goal cheio e, se cair fora do mapa/em célula desconhecida (a flag
-        # costuma estar além do que o LIDAR já mapeou), encurta o trajeto pela metade
-        # sucessivamente até achar um goal alcançável dentro do global costmap.
-        pose = None
+    def _calcular_marca_flag(self):
+        """Melhor pose ALCANÇÁVEL na direção da flag p/ MARCAR no 'map'. A flag costuma
+        estar além do que o LIDAR já mapeou -> o goal cheio cai fora do costmap; encurta
+        o trajeto por frações até cair dentro. Ao chegar perto, a fração 1.0 fica
+        alcançável -> a marca refina p/ a flag em si. None se não dá p/ calcular ainda."""
         for fracao in GOAL_FRACOES:
             cand = self._calcular_pose_bandeira(fracao)
             if cand is None:
-                # Sem TF/scan ainda: tenta de novo no próximo tick (não comuta estado).
-                self._nav_status = "falha"
-                return
+                return None
             if self._goal_alcancavel(cand):
-                pose = cand
-                break
-
-        if pose is None:
-            # Nenhuma fração caiu dentro do mapa: aguarda mais mapa.
-            self._nav_status = "falha"
-            return
-
-        if not self._nav_client.server_is_ready():
-            self._nav_status = "falha"
-            return
-
-        goal = NavigateToPose.Goal()
-        goal.pose = pose
-        self._nav_status = "pendente"
-        send_future = self._nav_client.send_goal_async(goal)
-        send_future.add_done_callback(self._on_goal_response)
+                return cand
+        return None
 
     def _enviar_goal_origem(self):
         """Volta p/ PERTO da base: para a DEPOSIT_STANDOFF da origem, do lado de onde o
