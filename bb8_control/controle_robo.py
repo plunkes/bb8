@@ -142,6 +142,12 @@ GIRO_RETORNO_MAX_TICKS = 60  # ticks ~6 s p/ alinhar (180° @1rad/s ~3.2s); esto
 # Radius maior + scaling menor = custo alto se espalha mais longe do obstáculo.
 RETORNO_INFLATION_RADIUS = 0.55  # [m] raio de inflação na volta (default costmap = 0.27)
 RETORNO_COST_SCALING = 2.5  # decaimento do custo na volta (default = 4.0; menor = mais largo)
+# Aderência ao caminho global na volta (DWB, runtime): Path* alto + Goal* baixo p/ o
+# robô SEGUIR o caminho e não cortar reto. Defaults da exploração (Path/Goal 32/24,
+# sim_time 1.5) ficam no nav2_params; estes só valem em RETORNANDO.
+RETORNO_PATH_SCALE = 64.0  # peso de ficar EM CIMA do caminho (PathAlign/PathDist)
+RETORNO_GOAL_SCALE = 10.0  # peso de puxar p/ o goal (GoalAlign/GoalDist): baixo = não corta
+RETORNO_SIM_TIME = 1.2  # [s] janela de simulação menor: trajetória reta projeta menos -> corta menos
 
 # Fallback de captura: depois de erguer, confirma a flag NA MÃO pela câmera (com a
 # flag presa, ela aparece grande na imagem). Se não confirmar, re-tenta o grab.
@@ -326,6 +332,7 @@ class ControleRobo(Node):
         global RE_VEL_RETORNO, RETORNO_REFRESH_TICKS
         global ALIGN_RETORNO_TOL, GIRO_RETORNO_W, GIRO_RETORNO_MAX_TICKS
         global RETORNO_INFLATION_RADIUS, RETORNO_COST_SCALING
+        global RETORNO_PATH_SCALE, RETORNO_GOAL_SCALE, RETORNO_SIM_TIME
         global DEPOSIT_STANDOFF, DEPOSIT_VEL, DEPOSIT_MAX_TICKS, DEPOSIT_PERDA_TICKS
         global DEPOSIT_DROP_DIST
 
@@ -374,6 +381,9 @@ class ControleRobo(Node):
         GIRO_RETORNO_MAX_TICKS = num("giro_retorno_max_ticks", GIRO_RETORNO_MAX_TICKS)
         RETORNO_INFLATION_RADIUS = num("retorno_inflation_radius", RETORNO_INFLATION_RADIUS)
         RETORNO_COST_SCALING = num("retorno_cost_scaling", RETORNO_COST_SCALING)
+        RETORNO_PATH_SCALE = num("retorno_path_scale", RETORNO_PATH_SCALE)
+        RETORNO_GOAL_SCALE = num("retorno_goal_scale", RETORNO_GOAL_SCALE)
+        RETORNO_SIM_TIME = num("retorno_sim_time", RETORNO_SIM_TIME)
         RE_DIST = num("re_dist", RE_DIST)
         GRAB_STALL_EPS = num("grab_stall_eps", GRAB_STALL_EPS)
         GRAB_STALL_TICKS = num("grab_stall_ticks", GRAB_STALL_TICKS)
@@ -491,9 +501,11 @@ class ControleRobo(Node):
             # Encarando a base (girou): volta SÓ de frente (min_vel_x=0) -> rápida.
             # Não conseguiu girar: libera a ré (min_vel_x<0) p/ voltar/reposicionar.
             min_vx = 0.0 if self._retorno_forward_only else -RE_VEL_RETORNO
-            self._set_vel_nav(VEL_RETORNO, min_vx)  # vel + ré/frente + peso de obstáculo
-            # Inflação maior: confia no mapa (LIDAR frontal mascarado) -> desvia com margem.
+            self._set_vel_nav(VEL_RETORNO, min_vx)  # vel + ré/frente + obstáculo + adere ao caminho
+            # Inflação maior + static_layer no local: confia no MAPA (LIDAR frontal
+            # mascarado) -> desvia com margem e segue o caminho global (não corta).
             self._set_inflation(RETORNO_INFLATION_RADIUS, RETORNO_COST_SCALING)
+            self._set_static_layer(True)
             self._enviar_goal_origem()  # volta p/ perto da base (standoff)
         elif estado == Estado.DEPOSITANDO:
             self._set_explore(False)
@@ -1185,7 +1197,26 @@ class ControleRobo(Node):
             Parameter(name="FollowPath.max_speed_xy", value=dv(vx)),
             Parameter(name="FollowPath.BaseObstacle.scale", value=dv(RETORNO_OBSTACLE_SCALE)),
             Parameter(name="FollowPath.min_vel_x", value=dv(min_vx)),
+            # Adere ao caminho global: Path* alto, Goal* baixo, sim_time menor (não corta).
+            Parameter(name="FollowPath.PathAlign.scale", value=dv(RETORNO_PATH_SCALE)),
+            Parameter(name="FollowPath.PathDist.scale", value=dv(RETORNO_PATH_SCALE)),
+            Parameter(name="FollowPath.GoalAlign.scale", value=dv(RETORNO_GOAL_SCALE)),
+            Parameter(name="FollowPath.GoalDist.scale", value=dv(RETORNO_GOAL_SCALE)),
+            Parameter(name="FollowPath.sim_time", value=dv(RETORNO_SIM_TIME)),
         ]
+        cli.call_async(req)
+
+    def _set_static_layer(self, ativar):
+        """Liga/desliga a static_layer do costmap LOCAL em runtime. Ligada só na volta:
+        traz o MAPA p/ o local p/ o DWB não cortar caminho com o LIDAR frontal mascarado.
+        Na exploração fica desligada (o mapa em construção atrapalhava)."""
+        val = ParameterValue(type=ParameterType.PARAMETER_BOOL, bool_value=bool(ativar))
+        param = Parameter(name="static_layer.enabled", value=val)
+        cli = self._fp_local_cli
+        if not cli.wait_for_service(timeout_sec=2.0):
+            return
+        req = SetParameters.Request()
+        req.parameters = [param]
         cli.call_async(req)
 
     def _concluir_missao(self):

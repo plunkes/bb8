@@ -107,7 +107,7 @@ controller_server:
       vx_samples: 15
       vy_samples: 5
       vtheta_samples: 15 # amostragem angular mais fina p/ girar em corredor estreito
-      sim_time: 1.5
+      sim_time: 1.5 # default exploração (RETORNANDO baixa em runtime p/ cortar menos caminho)
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.3
@@ -128,6 +128,8 @@ controller_server:
       BaseObstacle.scale:
         0.7 # peso de obstáculo maior: desvia melhor de parede (passa menos rente)
         # válidas que passam rente a obstáculos laterais
+      # Defaults da EXPLORAÇÃO. Na volta (RETORNANDO) a FSM sobe Path* e baixa Goal* em
+      # runtime p/ o DWB seguir o caminho global com rigor (não cortar).
       PathAlign.scale: 32.0
       PathAlign.forward_point_distance: 0.1
       GoalAlign.scale: 24.0
@@ -153,7 +155,17 @@ local_costmap:
       # footprint poligonal real (base quadrada 0.35 x 0.35 m) em vez de raio circular
       footprint: "[[0.175, 0.175], [0.175, -0.175], [-0.175, -0.175], [-0.175, 0.175]]"
       footprint_padding: 0.04 # margem pequena p/ desviar melhor de parede sem bloquear o arranque
-      plugins: [obstacle_layer, inflation_layer]
+      # static_layer no costmap LOCAL fica CARREGADA mas DESLIGADA (enabled:false): na
+      # exploração ela atrapalhava (mapa em construção entrando no local). A FSM a LIGA
+      # em runtime (static_layer.enabled=true) SÓ na volta (RETORNANDO): aí o braço up
+      # mascara o LIDAR frontal e o DWB ficava cego -> cortava caminho. Com o MAPA no
+      # local o obstáculo mapeado existe mesmo sem o LIDAR vê-lo. (rolling_window 4x4 m.)
+      plugins: [static_layer, obstacle_layer, inflation_layer]
+      static_layer:
+        plugin: nav2_costmap_2d::StaticLayer
+        enabled: false # a FSM liga só na volta à base (RETORNANDO)
+        map_subscribe_transient_local: true
+        subscribe_to_updates: true
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
         enabled: true
@@ -173,7 +185,7 @@ local_costmap:
         # padding maior p/ não raspar; decaimento moderado ainda deixa lane entre
         # cilindros pro robô passar/girar.
         cost_scaling_factor: 3.0
-        inflation_radius: 0.28
+        inflation_radius: 0.26
       always_send_full_costmap: true
 
 global_costmap:
@@ -211,8 +223,8 @@ global_costmap:
         plugin: nav2_costmap_2d::InflationLayer
         # padding maior p/ não raspar; decaimento moderado ainda deixa lane entre
         # cilindros pro robô passar/girar.
-        cost_scaling_factor: 5.0
-        inflation_radius: 0.29
+        cost_scaling_factor: 4.0
+        inflation_radius: 0.30
       always_send_full_costmap: true
 
 planner_server:
