@@ -73,7 +73,7 @@ def generate_launch_description():
         executable="odom_gt_publisher",
         name="ground_truth_odometry",
         parameters=[{"use_sim_time": True, "odom_frame": "odom"}],
-        output="screen",
+        output="log",  # logs no arquivo; só o controle_robo vai p/ a tela
     )
 
     # 4. Filtro dinâmico do LIDAR (publica /scan_filtered p/ SLAM e Nav2)
@@ -82,7 +82,7 @@ def generate_launch_description():
         executable="scan_masker",
         name="scan_masker",
         parameters=[{"use_sim_time": True}],
-        output="screen",
+        output="log",
     )
 
     # 5. SLAM
@@ -91,7 +91,7 @@ def generate_launch_description():
         executable="async_slam_toolbox_node",
         name="slam_toolbox",
         parameters=[slam_params, {"use_sim_time": True}],
-        output="screen",
+        output="log",
     )
 
     # 6. Nav2
@@ -113,7 +113,7 @@ def generate_launch_description():
         name="explore_node",
         parameters=[explore_params, {"use_sim_time": True}],
         remappings=[("/tf", "tf"), ("/tf_static", "tf_static")],
-        output="screen",
+        output="log",
     )
 
     # 8. Visão (detecção da bandeira)
@@ -126,7 +126,7 @@ def generate_launch_description():
             {"flag_label_ids": [25]},
             {"camera_hfov_deg": 108.86},  # casa com horizontal_fov 1.9 rad do sensor
         ],
-        output="screen",
+        output="log",
     )
 
     # 9. Servidor do gripper
@@ -135,7 +135,7 @@ def generate_launch_description():
         executable="gripper_server",
         name="gripper_server",
         parameters=[{"use_sim_time": True}],
-        output="screen",
+        output="log",
     )
 
     # 10. FSM orquestradora

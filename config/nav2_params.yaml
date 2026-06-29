@@ -285,7 +285,7 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: OPEN_LOOP
-    max_velocity: [1.6, 0.0, 2.5] # teto: deixa a volta à base ir a 1.5 (DWB sobe em runtime)
+    max_velocity: [1.5, 0.0, 2.5] # teto = vel. da volta (RETORNANDO 1.5; DWB sobe em runtime)
     # Piso de vx NEGATIVO p/ a ré PASSAR pelo smoother: o DWB já só comanda ré na
     # volta (min_vel_x<0 setado em runtime); na exploração min_vel_x=0 -> nunca dá ré.
     # Com 0.0 aqui o smoother CORTAVA a ré do DWB p/ 0 e o robô não reposicionava.

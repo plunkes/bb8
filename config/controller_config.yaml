@@ -56,7 +56,7 @@ diff_drive_base_controller:
     linear.x.has_velocity_limits: true
     linear.x.has_acceleration_limits: true
     linear.x.has_jerk_limits: false
-    linear.x.max_velocity: 1.6
+    linear.x.max_velocity: 1.5 # teto do robô = vel. da volta (RETORNANDO): deixa a volta ir a 1.5
     linear.x.min_velocity: -1.2
     linear.x.max_acceleration: 3.0
     linear.x.max_jerk: 0.0
