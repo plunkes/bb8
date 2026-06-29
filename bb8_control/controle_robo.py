@@ -122,6 +122,8 @@ GRAB_STALL_TICKS = (
 )
 VEL_RETORNO = 1.5  # [m/s] velocidade na volta à base (caminho já conhecido)
 RETORNO_OBSTACLE_SCALE = 1.0  # peso de obstáculo (DWB) na volta: mais cuidado c/ a flag
+RE_VEL_RETORNO = 0.3  # [m/s] ré liberada no DWB na volta (reposiciona com o casco maior)
+RETORNO_REFRESH_TICKS = 30  # re-envia o goal de volta a cada ~3 s (re-planeja contínuo)
 
 # Fallback de captura: depois de erguer, confirma a flag NA MÃO pela câmera (com a
 # flag presa, ela aparece grande na imagem). Se não confirmar, re-tenta o grab.
@@ -266,6 +268,8 @@ class ControleRobo(Node):
         self._goal_handle = None
         self._nav_status = None  # None | 'pendente' | 'sucesso' | 'falha'
         self._nav_retries = 0
+        self._return_goal = None  # PoseStamped do goal de volta (re-enviado p/ re-planejar)
+        self._retorno_refresh = 0  # contador p/ re-planejar continuamente a volta
 
         self.create_timer(1.0 / FREQ_CONTROLE, self._loop)
 
@@ -287,6 +291,7 @@ class ControleRobo(Node):
         global AVANCO_FRONT_SECTOR, AVANCO_SAFE_DIST, AVANCO_GIRO, FREQ_CONTROLE
         global GRAB_DIST_TOL, VEL_RETORNO, RE_DIST, GRAB_STALL_EPS, GRAB_STALL_TICKS
         global RETORNO_OBSTACLE_SCALE, VERIF_AREA_MIN, VERIF_MAX_TICKS, GRAB_ATTEMPTS_MAX
+        global RE_VEL_RETORNO, RETORNO_REFRESH_TICKS
         global DEPOSIT_STANDOFF, DEPOSIT_VEL, DEPOSIT_MAX_TICKS, DEPOSIT_PERDA_TICKS
         global DEPOSIT_DROP_DIST
 
@@ -327,6 +332,8 @@ class ControleRobo(Node):
         VERIF_AREA_MIN = num("verif_area_min", VERIF_AREA_MIN)
         VERIF_MAX_TICKS = num("verif_max_ticks", VERIF_MAX_TICKS)
         GRAB_ATTEMPTS_MAX = num("grab_attempts_max", GRAB_ATTEMPTS_MAX)
+        RE_VEL_RETORNO = num("vel_re_retorno", RE_VEL_RETORNO)
+        RETORNO_REFRESH_TICKS = num("retorno_refresh_ticks", RETORNO_REFRESH_TICKS)
         RE_DIST = num("re_dist", RE_DIST)
         GRAB_STALL_EPS = num("grab_stall_eps", GRAB_STALL_EPS)
         GRAB_STALL_TICKS = num("grab_stall_ticks", GRAB_STALL_TICKS)
@@ -435,7 +442,8 @@ class ControleRobo(Node):
             self._nav_retries = 0
             self._nav_status = None
             self._goal_handle = None
-            self._set_vel_nav(VEL_RETORNO)  # caminho já conhecido: volta mais rápido
+            self._retorno_refresh = 0
+            self._set_vel_nav(VEL_RETORNO)  # vel + ré + peso de obstáculo p/ a volta
             self._enviar_goal_origem()  # volta p/ perto da base (standoff)
         elif estado == Estado.DEPOSITANDO:
             self._set_explore(False)
@@ -725,13 +733,21 @@ class ControleRobo(Node):
     def _exec_retornando(self):
         if self._nav_status == "sucesso":
             self._set_estado(Estado.DEPOSITANDO)
-        elif self._nav_status == "falha":
+            return
+        if self._nav_status == "falha":
             self._nav_status = None
             if self._nav_retries < NAV_RETRY_MAX:
                 self._nav_retries += 1
                 self._enviar_goal_origem()
             else:
                 self._missao_completa = True
+            return
+        # Re-planejamento CONTÍNUO: re-envia o goal de volta periodicamente p/ o Nav2
+        # recalcular a trajetória com a costmap + footprint (retangular) atuais.
+        self._retorno_refresh += 1
+        if self._retorno_refresh >= RETORNO_REFRESH_TICKS and self._return_goal is not None:
+            self._retorno_refresh = 0
+            self._enviar_pose_nav(self._return_goal)
 
     def _exec_sucesso(self):
         # Chegou à base com a flag erguida: abaixa o braço, solta a flag e celebra.
@@ -831,13 +847,23 @@ class ControleRobo(Node):
                 gx = ox + DEPOSIT_STANDOFF * dx / d
                 gy = oy + DEPOSIT_STANDOFF * dy / d
                 yaw = math.atan2(oy - gy, ox - gx)  # virado p/ a origem (plataforma)
+        pose = PoseStamped()
+        pose.header.frame_id = "map"
+        pose.pose.position.x = gx
+        pose.pose.position.y = gy
+        pose.pose.orientation.z = math.sin(yaw / 2.0)
+        pose.pose.orientation.w = math.cos(yaw / 2.0)
+        self._return_goal = pose  # guarda p/ re-enviar (re-planejamento contínuo)
+        self._enviar_pose_nav(pose)
+
+    def _enviar_pose_nav(self, pose):
+        """Envia uma PoseStamped (frame 'map') como goal NavigateToPose."""
+        if not self._nav_client.server_is_ready():
+            self._nav_status = "falha"
+            return
         goal = NavigateToPose.Goal()
-        goal.pose.header.frame_id = "map"
+        goal.pose = pose
         goal.pose.header.stamp = self.get_clock().now().to_msg()
-        goal.pose.pose.position.x = gx
-        goal.pose.pose.position.y = gy
-        goal.pose.pose.orientation.z = math.sin(yaw / 2.0)
-        goal.pose.pose.orientation.w = math.cos(yaw / 2.0)
         self._nav_status = "pendente"
         send_future = self._nav_client.send_goal_async(goal)
         send_future.add_done_callback(self._on_goal_response)
@@ -1020,9 +1046,9 @@ class ControleRobo(Node):
             cli.call_async(req)
 
     def _set_vel_nav(self, vx):
-        """Reconfigura o controlador Nav2 (DWB) em runtime p/ a volta à base:
-        velocidade linear máx = vx (caminho conhecido) e peso de obstáculo maior
-        (RETORNO_OBSTACLE_SCALE) p/ desviar mais carregando a flag."""
+        """Reconfigura o controlador Nav2 (DWB) em runtime p/ a volta à base: vel.
+        linear máx = vx (caminho conhecido), peso de obstáculo maior e RÉ liberada
+        (min_vel_x < 0) p/ reposicionar com o casco maior carregando a flag."""
         cli = self._ctrl_param_cli
         if not cli.wait_for_service(timeout_sec=2.0):
             return
@@ -1037,6 +1063,8 @@ class ControleRobo(Node):
             Parameter(name="FollowPath.max_vel_x", value=dv(vx)),
             Parameter(name="FollowPath.max_speed_xy", value=dv(vx)),
             Parameter(name="FollowPath.BaseObstacle.scale", value=dv(RETORNO_OBSTACLE_SCALE)),
+            # Libera ré (min_vel_x < 0) p/ o DWB reposicionar com o casco maior.
+            Parameter(name="FollowPath.min_vel_x", value=dv(-RE_VEL_RETORNO)),
         ]
         cli.call_async(req)
 

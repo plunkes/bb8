@@ -43,6 +43,8 @@ controle_robo:
     re_dist: 0.55 # [m] folga p/ estender/abrir o braço sem bater no pole (>0.4) - fallback maior
     vel_retorno: 1.5 # [m/s] velocidade na volta à base (caminho já conhecido)
     retorno_obstacle_scale: 1.0 # peso de obstáculo (DWB) na volta: desvia mais com a flag
+    vel_re_retorno: 0.3 # [m/s] ré liberada no DWB na volta (reposiciona com o casco maior)
+    retorno_refresh_ticks: 30 # re-envia o goal de volta a cada ~3 s (re-planeja contínuo)
 
     # --- Fallback: confirma a flag NA MÃO pela câmera após erguer (senão re-tenta) ---
     verif_area_min: 800 # [px] área mínima da flag na câmera p/ confirmar que está na mão
