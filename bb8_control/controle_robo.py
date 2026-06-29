@@ -12,6 +12,8 @@ Estados / fluxo:
                 câmera + range câmera/LIDAR); de perto assume o servo visual.
   POSICIONANDO_FINAL -> recua p/ a folga, estende o braço, centra/avança na haste,
                 fecha a garra, ergue a flag e aumenta o footprint.
+  ALINHANDO_RETORNO -> gira no lugar p/ encarar a base e voltar DE FRENTE (rápido);
+                sem espaço p/ girar o casco grande -> volta de ré (fallback).
   RETORNANDO_ORIGEM -> Nav2 (mais rápido) p/ perto da base (standoff da origem).
   DEPOSITANDO -> visão da plataforma (label 28) p/ centrar + TF até o centro.
   SUCESSO -> abaixa o braço, solta a flag e imprime a vitória.
@@ -57,6 +59,7 @@ class Estado(Enum):
     EXPLORANDO = auto()
     NAVEGANDO_PARA_BANDEIRA = auto()
     POSICIONANDO_FINAL = auto()
+    ALINHANDO_RETORNO = auto()  # pós-captura: gira no lugar p/ encarar a base e voltar de frente
     RETORNANDO_ORIGEM = auto()
     DEPOSITANDO = auto()  # perto da base: visão centra na plataforma (label 28)
     SUCESSO = auto()  # chegou à base: abaixa o braço, solta a flag e celebra
@@ -128,6 +131,12 @@ VEL_RETORNO = 1.5  # [m/s] velocidade na volta à base (caminho já conhecido)
 RETORNO_OBSTACLE_SCALE = 1.0  # peso de obstáculo (DWB) na volta: mais cuidado c/ a flag
 RE_VEL_RETORNO = 0.3  # [m/s] ré liberada no DWB na volta (reposiciona com o casco maior)
 RETORNO_REFRESH_TICKS = 30  # re-envia o goal de volta a cada ~3 s (re-planeja contínuo)
+# Pré-volta: gira no lugar p/ encarar a base ANTES de mandar o goal -> volta DE FRENTE
+# (rápida, VEL_RETORNO) em vez de dar ré o caminho todo (lenta). Se não conseguir girar
+# o casco grande a tempo (sem espaço), cai p/ a volta com ré liberada (fallback).
+ALIGN_RETORNO_TOL = math.radians(10.0)  # |erro de yaw| p/ considerar encarando a base
+GIRO_RETORNO_W = 1.0  # [rad/s] giro máx no lugar (moderado: casco grande com a flag)
+GIRO_RETORNO_MAX_TICKS = 60  # ticks ~6 s p/ alinhar (180° @1rad/s ~3.2s); estourou -> ré
 
 # Fallback de captura: depois de erguer, confirma a flag NA MÃO pela câmera (com a
 # flag presa, ela aparece grande na imagem). Se não confirmar, re-tenta o grab.
@@ -278,6 +287,8 @@ class ControleRobo(Node):
         self._missao_completa = False
         self._explore_on = None  # último valor publicado em explore/resume (None = nunca)
         self._pose_origem = None  # PoseStamped em 'map', gravada ao iniciar
+        self._giro_ticks = 0  # ticks girando no lugar p/ encarar a base (ALINHANDO_RETORNO)
+        self._retorno_forward_only = True  # True = volta SÓ de frente; False = ré liberada
 
         # Acompanhamento do goal do Nav2
         self._goal_handle = None
@@ -308,6 +319,7 @@ class ControleRobo(Node):
         global GRAB_DIST_TOL, VEL_RETORNO, RE_DIST, GRAB_STALL_EPS, GRAB_STALL_TICKS
         global RETORNO_OBSTACLE_SCALE, VERIF_AREA_MIN, VERIF_MAX_TICKS, GRAB_ATTEMPTS_MAX
         global RE_VEL_RETORNO, RETORNO_REFRESH_TICKS
+        global ALIGN_RETORNO_TOL, GIRO_RETORNO_W, GIRO_RETORNO_MAX_TICKS
         global DEPOSIT_STANDOFF, DEPOSIT_VEL, DEPOSIT_MAX_TICKS, DEPOSIT_PERDA_TICKS
         global DEPOSIT_DROP_DIST
 
@@ -351,6 +363,9 @@ class ControleRobo(Node):
         GRAB_ATTEMPTS_MAX = num("grab_attempts_max", GRAB_ATTEMPTS_MAX)
         RE_VEL_RETORNO = num("vel_re_retorno", RE_VEL_RETORNO)
         RETORNO_REFRESH_TICKS = num("retorno_refresh_ticks", RETORNO_REFRESH_TICKS)
+        ALIGN_RETORNO_TOL = ang("align_retorno_tol_deg", ALIGN_RETORNO_TOL)
+        GIRO_RETORNO_W = num("giro_retorno_w", GIRO_RETORNO_W)
+        GIRO_RETORNO_MAX_TICKS = num("giro_retorno_max_ticks", GIRO_RETORNO_MAX_TICKS)
         RE_DIST = num("re_dist", RE_DIST)
         GRAB_STALL_EPS = num("grab_stall_eps", GRAB_STALL_EPS)
         GRAB_STALL_TICKS = num("grab_stall_ticks", GRAB_STALL_TICKS)
@@ -412,6 +427,8 @@ class ControleRobo(Node):
             self._exec_navegando()
         elif e == Estado.POSICIONANDO_FINAL:
             self._exec_posicionando()
+        elif e == Estado.ALINHANDO_RETORNO:
+            self._exec_alinhando_retorno()
         elif e == Estado.RETORNANDO_ORIGEM:
             self._exec_retornando()
         elif e == Estado.DEPOSITANDO:
@@ -454,13 +471,19 @@ class ControleRobo(Node):
             self._braco_estendido = False
             self._grab_rng_min = None
             self._grab_stall = 0
+        elif estado == Estado.ALINHANDO_RETORNO:
+            self._set_explore(False)  # pausa o m-explore (libera o /cmd_vel p/ girar)
+            self._giro_ticks = 0
         elif estado == Estado.RETORNANDO_ORIGEM:
             self._set_explore(False)
             self._nav_retries = 0
             self._nav_status = None
             self._goal_handle = None
             self._retorno_refresh = 0
-            self._set_vel_nav(VEL_RETORNO)  # vel + ré + peso de obstáculo p/ a volta
+            # Encarando a base (girou): volta SÓ de frente (min_vel_x=0) -> rápida.
+            # Não conseguiu girar: libera a ré (min_vel_x<0) p/ voltar/reposicionar.
+            min_vx = 0.0 if self._retorno_forward_only else -RE_VEL_RETORNO
+            self._set_vel_nav(VEL_RETORNO, min_vx)  # vel + ré/frente + peso de obstáculo
             self._enviar_goal_origem()  # volta p/ perto da base (standoff)
         elif estado == Estado.DEPOSITANDO:
             self._set_explore(False)
@@ -756,7 +779,7 @@ class ControleRobo(Node):
                 # Flag presa aparece grande na câmera: aumenta o footprint e volta.
                 self._grab_attempts = 0
                 self._set_footprint(FOOTPRINT_COM_BRACO)
-                self._set_estado(Estado.RETORNANDO_ORIGEM)
+                self._set_estado(Estado.ALINHANDO_RETORNO)
             elif self._posic_ticks >= VERIF_MAX_TICKS:
                 self._grab_attempts += 1
                 if self._grab_attempts < GRAB_ATTEMPTS_MAX:
@@ -767,8 +790,47 @@ class ControleRobo(Node):
                 else:
                     # Esgotou tentativas: segue p/ a base assim mesmo (best effort).
                     self._set_footprint(FOOTPRINT_COM_BRACO)
-                    self._set_estado(Estado.RETORNANDO_ORIGEM)
+                    self._set_estado(Estado.ALINHANDO_RETORNO)
             return
+
+    @staticmethod
+    def _yaw_de(q):
+        """Yaw [rad] de um quaternion (rotação só em z, plano)."""
+        return math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        )
+
+    def _exec_alinhando_retorno(self):
+        """Gira NO LUGAR p/ encarar a base ANTES de mandar o goal de volta -> o robô
+        volta de FRENTE (rápido) em vez de dar ré o caminho todo (lento). Se o casco
+        grande (com a flag) não conseguir girar a tempo (sem espaço), cai p/ a volta
+        com a ré liberada (fallback)."""
+        pos = self._pose_atual_em_map()
+        if pos is None or self._pose_origem is None:
+            self._parar()
+            return
+        px, py = pos.pose.position.x, pos.pose.position.y
+        ox, oy = self._pose_origem.pose.position.x, self._pose_origem.pose.position.y
+        alvo = math.atan2(oy - py, ox - px)  # encara a origem (base à frente)
+        err = (alvo - self._yaw_de(pos.pose.orientation) + math.pi) % (
+            2 * math.pi
+        ) - math.pi
+
+        self._giro_ticks += 1
+        if abs(err) <= ALIGN_RETORNO_TOL:
+            self._parar()
+            self._retorno_forward_only = True  # alinhado: volta SÓ de frente (rápida)
+            self._set_estado(Estado.RETORNANDO_ORIGEM)
+            return
+        if self._giro_ticks > GIRO_RETORNO_MAX_TICKS:
+            # Não girou a tempo (sem espaço p/ o casco grande): volta com ré liberada.
+            self._parar()
+            self._retorno_forward_only = False
+            self._set_estado(Estado.RETORNANDO_ORIGEM)
+            return
+        cmd = Twist()
+        cmd.angular.z = max(-GIRO_RETORNO_W, min(GIRO_RETORNO_W, 2.0 * err))
+        self._pub_cmd.publish(cmd)
 
     def _exec_retornando(self):
         if self._nav_status == "sucesso":
@@ -1071,10 +1133,13 @@ class ControleRobo(Node):
             req.parameters = [param]
             cli.call_async(req)
 
-    def _set_vel_nav(self, vx):
+    def _set_vel_nav(self, vx, min_vx=None):
         """Reconfigura o controlador Nav2 (DWB) em runtime p/ a volta à base: vel.
-        linear máx = vx (caminho conhecido), peso de obstáculo maior e RÉ liberada
-        (min_vel_x < 0) p/ reposicionar com o casco maior carregando a flag."""
+        linear máx = vx (caminho conhecido) e peso de obstáculo maior. `min_vx` =
+        piso de vel. linear: 0.0 volta SÓ de frente (rápida, já encarando a base);
+        < 0 libera a ré p/ reposicionar com o casco maior. None => -RE_VEL_RETORNO."""
+        if min_vx is None:
+            min_vx = -RE_VEL_RETORNO
         cli = self._ctrl_param_cli
         if not cli.wait_for_service(timeout_sec=2.0):
             return
@@ -1089,8 +1154,7 @@ class ControleRobo(Node):
             Parameter(name="FollowPath.max_vel_x", value=dv(vx)),
             Parameter(name="FollowPath.max_speed_xy", value=dv(vx)),
             Parameter(name="FollowPath.BaseObstacle.scale", value=dv(RETORNO_OBSTACLE_SCALE)),
-            # Libera ré (min_vel_x < 0) p/ o DWB reposicionar com o casco maior.
-            Parameter(name="FollowPath.min_vel_x", value=dv(-RE_VEL_RETORNO)),
+            Parameter(name="FollowPath.min_vel_x", value=dv(min_vx)),
         ]
         cli.call_async(req)
 

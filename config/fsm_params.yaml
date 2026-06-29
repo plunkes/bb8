@@ -46,6 +46,9 @@ controle_robo:
     retorno_obstacle_scale: 1.0 # peso de obstáculo (DWB) na volta: desvia mais com a flag
     vel_re_retorno: 0.3 # [m/s] ré liberada no DWB na volta (reposiciona com o casco maior)
     retorno_refresh_ticks: 30 # re-envia o goal de volta a cada ~3 s (re-planeja contínuo)
+    align_retorno_tol_deg: 10.0 # |erro de yaw| p/ considerar encarando a base (gira antes de voltar)
+    giro_retorno_w: 1.0 # [rad/s] giro no lugar p/ encarar a base (moderado: casco grande c/ flag)
+    giro_retorno_max_ticks: 60 # ticks (~6 s) p/ alinhar; estourou (sem espaço) -> volta de ré
 
     # --- Fallback: confirma a flag NA MÃO pela câmera após erguer (senão re-tenta) ---
     verif_area_min: 800 # [px] área mínima da flag na câmera p/ confirmar que está na mão
