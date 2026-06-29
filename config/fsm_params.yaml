@@ -49,6 +49,8 @@ controle_robo:
     align_retorno_tol_deg: 10.0 # |erro de yaw| p/ considerar encarando a base (gira antes de voltar)
     giro_retorno_w: 1.0 # [rad/s] giro no lugar p/ encarar a base (moderado: casco grande c/ flag)
     giro_retorno_max_ticks: 60 # ticks (~6 s) p/ alinhar; estourou (sem espaço) -> volta de ré
+    retorno_inflation_radius: 0.55 # [m] inflação MAIOR na volta (default costmap 0.27): confia no mapa
+    retorno_cost_scaling: 2.5 # decaimento do custo na volta (default 4.0; menor = custo espalha mais)
 
     # --- Fallback: confirma a flag NA MÃO pela câmera após erguer (senão re-tenta) ---
     verif_area_min: 800 # [px] área mínima da flag na câmera p/ confirmar que está na mão

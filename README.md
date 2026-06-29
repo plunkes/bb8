@@ -20,7 +20,9 @@ bb8_control/
 │   └── odom_gt_publisher.py    # odometria ground-truth (TF odom->base_link)
 ├── description/robot.urdf.xacro  # descrição do robô (migrada do prm_2026)
 ├── config/                       # controller_config, slam_toolbox, nav2, explore
-├── behavior_trees/navigate_no_backup.xml
+├── behavior_trees/
+│   ├── navigate_no_backup.xml      # exploração/flag: sem ré nem spin (câmera precisa ver a flag)
+│   └── navigate_with_backup.xml    # volta à base: ré (BackUp) + spin liberados no recovery
 ├── rviz/rviz_config.rviz
 └── launch/
     ├── explore_and_catch_flag.launch.py   # MISSÃO COMPLETA (entrypoint)
@@ -84,6 +86,28 @@ ros2 launch bb8_control spawn_robot.launch.py rviz:=true
 # Só o robot_state_publisher (descrição/TFs)
 ros2 launch bb8_control robot_state_publisher.launch.py
 ```
+
+## Máquina de estados (FSM)
+
+A FSM (`controle_robo.py`) orquestra toda a missão. Estados e transições:
+
+| Estado | O que faz | Sai para |
+|--------|-----------|----------|
+| **INICIALIZANDO** | Espera o Nav2 (`navigate_to_pose`) subir e grava a pose de origem (base) no `map`. | EXPLORANDO |
+| **EXPLORANDO** | Libera o `explore_lite` (`explore/resume`), que manda goals de fronteira ao Nav2. Vigia a câmera (flag) e a detecção de "encravado". | NAVEGANDO_PARA_BANDEIRA (viu a flag) · BUSCANDO_PAREDE (encravado) |
+| **NAVEGANDO_PARA_BANDEIRA** | Pausa o explore; marca a flag no `map` (bearing câmera + range câmera/LIDAR) e manda goals Nav2 p/ perto dela. De LONGE recalcula a marca; PERTO (≤ `vs_dist`) para de recalcular e troca de estado. | POSICIONANDO_FINAL (perto/alinhado) · EXPLORANDO (perdeu a flag) |
+| **POSICIONANDO_FINAL** | Captura em 5 fases: recua p/ folga + estende o braço → centra/avança na haste → fecha a garra → ergue a flag → confirma a flag na mão (câmera) e aumenta o footprint (caixa → retângulo). | ALINHANDO_RETORNO (pegou) · NAVEGANDO_PARA_BANDEIRA (falhou, re-aproxima) |
+| **ALINHANDO_RETORNO** | Gira NO LUGAR p/ encarar a base, p/ voltar DE FRENTE (rápido) em vez de dar ré o caminho todo. Sem espaço p/ girar o casco grande a tempo → marca a volta com ré liberada (fallback). | RETORNANDO_ORIGEM |
+| **RETORNANDO_ORIGEM** | Nav2 (mais rápido) até o standoff da origem. Volta só de frente (ou ré, se não girou). Inflação dos costmaps AUMENTADA (confia no mapa: braço up mascara o LIDAR frontal). BT com recovery de ré/spin. | DEPOSITANDO (chegou) · fim (best effort, esgotou retries) |
+| **DEPOSITANDO** | Perto da base: visão da plataforma (label 28) centra + avança devagar; TF até o centro da origem diz quando parar. | SUCESSO |
+| **SUCESSO** | No centro: abaixa o braço, abre a garra (solta a flag) e imprime a vitória. | — (missão completa) |
+| **BUSCANDO_PAREDE** | Recovery: encravado em área aberta (explore manda goal pro próprio lugar). Avança e desvia p/ o lado mais aberto até achar parede nova p/ mapear. | NAVEGANDO_PARA_BANDEIRA (viu a flag) · EXPLORANDO (esgotou o avanço) |
+
+Fluxo nominal: `INICIALIZANDO → EXPLORANDO → NAVEGANDO_PARA_BANDEIRA → POSICIONANDO_FINAL → ALINHANDO_RETORNO → RETORNANDO_ORIGEM → DEPOSITANDO → SUCESSO`.
+
+O Nav2 é dono do `/cmd_vel` na navegação; nas fases de perto (servo, captura, recovery
+manual, giro de alinhamento, depósito) a FSM publica `/cmd_vel` direto. Tuning dos
+estados em `config/fsm_params.yaml`.
 
 ## Arquitetura (resumo)
 

@@ -137,6 +137,11 @@ RETORNO_REFRESH_TICKS = 30  # re-envia o goal de volta a cada ~3 s (re-planeja c
 ALIGN_RETORNO_TOL = math.radians(10.0)  # |erro de yaw| p/ considerar encarando a base
 GIRO_RETORNO_W = 1.0  # [rad/s] giro máx no lugar (moderado: casco grande com a flag)
 GIRO_RETORNO_MAX_TICKS = 60  # ticks ~6 s p/ alinhar (180° @1rad/s ~3.2s); estourou -> ré
+# Inflação MAIOR na volta: braço up mascara o LIDAR frontal -> o robô confia no MAPA
+# (obstáculos já mapeados), sem enxergar à frente; precisa de margem extra p/ desviar.
+# Radius maior + scaling menor = custo alto se espalha mais longe do obstáculo.
+RETORNO_INFLATION_RADIUS = 0.55  # [m] raio de inflação na volta (default costmap = 0.27)
+RETORNO_COST_SCALING = 2.5  # decaimento do custo na volta (default = 4.0; menor = mais largo)
 
 # Fallback de captura: depois de erguer, confirma a flag NA MÃO pela câmera (com a
 # flag presa, ela aparece grande na imagem). Se não confirmar, re-tenta o grab.
@@ -320,6 +325,7 @@ class ControleRobo(Node):
         global RETORNO_OBSTACLE_SCALE, VERIF_AREA_MIN, VERIF_MAX_TICKS, GRAB_ATTEMPTS_MAX
         global RE_VEL_RETORNO, RETORNO_REFRESH_TICKS
         global ALIGN_RETORNO_TOL, GIRO_RETORNO_W, GIRO_RETORNO_MAX_TICKS
+        global RETORNO_INFLATION_RADIUS, RETORNO_COST_SCALING
         global DEPOSIT_STANDOFF, DEPOSIT_VEL, DEPOSIT_MAX_TICKS, DEPOSIT_PERDA_TICKS
         global DEPOSIT_DROP_DIST
 
@@ -366,6 +372,8 @@ class ControleRobo(Node):
         ALIGN_RETORNO_TOL = ang("align_retorno_tol_deg", ALIGN_RETORNO_TOL)
         GIRO_RETORNO_W = num("giro_retorno_w", GIRO_RETORNO_W)
         GIRO_RETORNO_MAX_TICKS = num("giro_retorno_max_ticks", GIRO_RETORNO_MAX_TICKS)
+        RETORNO_INFLATION_RADIUS = num("retorno_inflation_radius", RETORNO_INFLATION_RADIUS)
+        RETORNO_COST_SCALING = num("retorno_cost_scaling", RETORNO_COST_SCALING)
         RE_DIST = num("re_dist", RE_DIST)
         GRAB_STALL_EPS = num("grab_stall_eps", GRAB_STALL_EPS)
         GRAB_STALL_TICKS = num("grab_stall_ticks", GRAB_STALL_TICKS)
@@ -484,6 +492,8 @@ class ControleRobo(Node):
             # Não conseguiu girar: libera a ré (min_vel_x<0) p/ voltar/reposicionar.
             min_vx = 0.0 if self._retorno_forward_only else -RE_VEL_RETORNO
             self._set_vel_nav(VEL_RETORNO, min_vx)  # vel + ré/frente + peso de obstáculo
+            # Inflação maior: confia no mapa (LIDAR frontal mascarado) -> desvia com margem.
+            self._set_inflation(RETORNO_INFLATION_RADIUS, RETORNO_COST_SCALING)
             self._enviar_goal_origem()  # volta p/ perto da base (standoff)
         elif estado == Estado.DEPOSITANDO:
             self._set_explore(False)
@@ -1131,6 +1141,26 @@ class ControleRobo(Node):
                 continue
             req = SetParameters.Request()
             req.parameters = [param]
+            cli.call_async(req)
+
+    def _set_inflation(self, radius, scaling):
+        """Reconfigura a inflation_layer dos costmaps local+global em runtime. Na volta
+        o braço up mascara o LIDAR frontal -> o robô confia no MAPA; precisa de margem
+        maior (radius) e custo que se espalha mais (scaling menor) p/ desviar bem."""
+        def dv(v):
+            return ParameterValue(
+                type=ParameterType.PARAMETER_DOUBLE, double_value=float(v)
+            )
+
+        params = [
+            Parameter(name="inflation_layer.inflation_radius", value=dv(radius)),
+            Parameter(name="inflation_layer.cost_scaling_factor", value=dv(scaling)),
+        ]
+        for cli in (self._fp_local_cli, self._fp_global_cli):
+            if not cli.wait_for_service(timeout_sec=2.0):
+                continue
+            req = SetParameters.Request()
+            req.parameters = params
             cli.call_async(req)
 
     def _set_vel_nav(self, vx, min_vx=None):
