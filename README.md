@@ -8,12 +8,6 @@ O robô explora autonomamente a arena usando SLAM + Nav2 + exploração de
 fronteiras (`m-explore`), detecta a bandeira por segmentação semântica da câmera
 e a coleta com um braço/gripper, tudo orquestrado por uma FSM.
 
-> **Branch:** baseada em `explore_flag` (stack SLAM + Nav2 + m-explore que
-> substitui o antigo wall-follower reativo). O pacote é **independente**: contém
-> a sua própria descrição do robô (URDF/Xacro), configs de controle, SLAM, Nav2 e
-> exploração, e os launch files. Depende do `prm_2026` apenas para o **mundo e
-> modelos** do Gazebo, e do `m-explore-ros2` para o nó `explore_lite`.
-
 ## Conteúdo do pacote
 
 ```
@@ -49,25 +43,21 @@ no `src/` do workspace:
 ## Instalação
 
 ```bash
-# 1. Criar o workspace e o src/
-mkdir -p ~/prm_ws/src
-cd ~/prm_ws/src
-
-# 2. Clonar este pacote
+# 1. Clonar este pacote
 git clone <URL-deste-repo> bb8_control
 
-# 3. Clonar as dependências externas (mundo + exploração)
+# 2. Clonar as dependências externas (mundo + exploração)
 git clone https://github.com/matheusbg8/prm_2026.git
 git clone https://github.com/robo-friends/m-explore-ros2.git
 
-# 4. Instalar dependências ROS
+# 3. Instalar dependências ROS
 cd ~/prm_ws
 rosdep install --from-paths src --ignore-src -r -y
 
-# 5. Build
+# 4. Build
 colcon build --symlink-install
 
-# 6. Source
+# 5. Source
 source install/local_setup.bash
 ```
 
@@ -106,6 +96,3 @@ ros2 launch bb8_control robot_state_publisher.launch.py
   (`/robot_cam/labels_map`).
 - **Coleta:** `gripper_server` + juntas do braço (`shoulder_pitch`, `arm_elbow`,
   `gripper_extension`) no `gripper_controller`.
-
-Veja [`troubleshooting_notes.md`](troubleshooting_notes.md) para caveats de
-caminhos, variáveis do Gazebo, pontes e a feature de exploração do m-explore.
