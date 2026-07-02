@@ -7,7 +7,7 @@ braço entra no campo de visão do LIDAR e gera falsas leituras de obstáculo be
 
 Solução: este nó monitora /joint_states. Sempre que shoulder_pitch estiver na
 posição de gatilho (~45 graus, com tolerância configurável), as leituras do
-LaserScan num setor frontal (por padrão -15° a +15°, ou seja 30°) são mascaradas
+LaserScan num setor frontal (por padrão -10° a +10°, ou seja 20°) são mascaradas
 (range = inf). Quando o braço volta a 0°, o scan volta a passar intacto.
 
 Tópicos:
@@ -19,8 +19,8 @@ Parâmetros:
   shoulder_joint_name (str)   nome da junta monitorada      (default: shoulder_pitch)
   trigger_position    (float) posição-gatilho em rad        (default: 0.785398 = 45°)
   position_tolerance  (float) tolerância em rad p/ o gatilho (default: 0.10)
-  mask_min_deg        (float) limite inferior do setor (deg) (default: -15.0)
-  mask_max_deg        (float) limite superior do setor (deg) (default:  15.0)
+  mask_min_deg        (float) limite inferior do setor (deg) (default: -10.0)
+  mask_max_deg        (float) limite superior do setor (deg) (default:  10.0)
   scan_topic          (str)   tópico do scan bruto           (default: /scan)
   filtered_topic      (str)   tópico do scan filtrado        (default: /scan_filtered)
 """
@@ -43,8 +43,8 @@ class ScanMasker(Node):
         self.declare_parameter("shoulder_joint_name", "shoulder_pitch")
         self.declare_parameter("trigger_position", 0.785398)  # 45 graus
         self.declare_parameter("position_tolerance", 0.10)
-        self.declare_parameter("mask_min_deg", -15.0)
-        self.declare_parameter("mask_max_deg", 15.0)
+        self.declare_parameter("mask_min_deg", -10.0)
+        self.declare_parameter("mask_max_deg", 10.0)
         self.declare_parameter("scan_topic", "/scan")
         self.declare_parameter("filtered_topic", "/scan_filtered")
 

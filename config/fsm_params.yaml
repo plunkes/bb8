@@ -44,15 +44,15 @@ controle_robo:
     grab_stall_eps: 0.01 # [m] progresso mín. de rng p/ não contar como "encostou"
     grab_stall_ticks: 6 # ticks alinhado sem aproximar (rng parou) = haste na palma -> fecha
     re_dist: 0.7 # [m] folga p/ estender/abrir o braço sem bater no pole (>0.4) - fallback maior
-    vel_retorno: 1.5 # [m/s] velocidade na volta à base (caminho já conhecido)
-    retorno_obstacle_scale: 1.0 # peso de obstáculo (DWB) na volta: desvia mais com a flag
+    vel_retorno: 0.6 # [m/s] velocidade na volta à base (mais devagar na volta)
+    retorno_obstacle_scale: 0.2 # peso de obstáculo (DWB) na volta: baixo p/ passar entre 2 obstáculos (segue o path)
     vel_re_retorno: 0.3 # [m/s] ré liberada no DWB na volta (reposiciona com o casco maior)
     retorno_refresh_ticks: 30 # re-envia o goal de volta a cada ~3 s (re-planeja contínuo)
     align_retorno_tol_deg: 10.0 # |erro de yaw| p/ considerar encarando a base (gira antes de voltar)
-    giro_retorno_w: 1.0 # [rad/s] giro no lugar p/ encarar a base (moderado: casco grande c/ flag)
+    giro_retorno_w: 0.6 # [rad/s] giro no lugar p/ encarar a base (mais devagar virando)
     giro_retorno_max_ticks: 60 # ticks (~6 s) p/ alinhar; estourou (sem espaço) -> volta de ré
-    retorno_inflation_radius: 0.55 # [m] inflação MAIOR na volta (default costmap 0.27): confia no mapa
-    retorno_cost_scaling: 2.5 # decaimento do custo na volta (default 4.0; menor = custo espalha mais)
+    retorno_inflation_radius: 0.38 # [m] inflação na volta: acima do footprint (~0.25) mas NÃO fecha vãos entre 2 obstáculos
+    retorno_cost_scaling: 5.0 # decaimento do custo na volta: alto = custo cai rápido, vão entre obstáculos fica barato
     retorno_path_scale: 64.0 # DWB na volta: peso de SEGUIR o caminho (Path*); default exploração 32
     retorno_goal_scale: 10.0 # DWB na volta: peso de puxar p/ o goal (Goal*); baixo = não corta (default 24)
     retorno_sim_time: 1.2 # [s] DWB na volta: janela de sim menor p/ cortar menos (default 1.5)
@@ -67,11 +67,11 @@ controle_robo:
     grab_attempts_max: 3 # re-grabs antes de seguir p/ a base assim mesmo (best effort)
 
     # --- Depósito da flag na plataforma de início (label 28, visão) ---
-    deposit_standoff: 1.0 # [m] para a esta distância da origem (plataforma à frente)
+    deposit_standoff: 0.4 # [m] goal do Nav ~na origem (onde o robô nasceu), não 1 m antes
     deposit_vel: 0.2 # [m/s] avanço lento centrando na plataforma
     deposit_max_ticks: 60 # ticks ~8 s máx (fallback) p/ subir na plataforma
     deposit_perda_ticks: 8 # ticks sem ver a plataforma (após vê-la) = está por cima
-    deposit_drop_dist: 0.45 # [m] distância ao centro (origem) p/ baixar o braço e soltar
+    deposit_drop_dist: 0.35 # [m] raio de ativação do último estado (solta a flag): um pouco menor
 
     # --- Encravado / busca de parede (recovery) ---
     stuck_min_move: 0.15 # [m] deslocamento mín. p/ "está se movendo"

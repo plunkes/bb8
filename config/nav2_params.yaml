@@ -94,7 +94,7 @@ controller_server:
       min_vel_y: 0.0
       max_vel_x: 1.0 # menos corte de curva a alta velocidade (raspava obstáculo)
       max_vel_y: 0.0
-      max_vel_theta: 3.0 # giro mais rápido p/ virar 180° com facilidade (corpo quadrado leve)
+      max_vel_theta: 1.5 # giro mais devagar (era 3.0): robô vira menos brusco
       min_speed_xy: 0.0
       max_speed_xy: 1.0
       min_speed_theta: 0.0
@@ -275,7 +275,7 @@ behavior_server:
     robot_base_frame: base_link
     transform_tolerance: 0.1
     simulate_ahead_time: 2.0
-    max_rotational_vel: 2.0
+    max_rotational_vel: 1.2
     min_rotational_vel: 0.4
     rotational_acc_lim: 2.5
 
@@ -285,11 +285,11 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: OPEN_LOOP
-    max_velocity: [1.5, 0.0, 2.5] # teto = vel. da volta (RETORNANDO 1.5; DWB sobe em runtime)
+    max_velocity: [1.5, 0.0, 1.5] # teto de giro baixado p/ 1.5 (casa c/ max_vel_theta)
     # Piso de vx NEGATIVO p/ a ré PASSAR pelo smoother: o DWB já só comanda ré na
     # volta (min_vel_x<0 setado em runtime); na exploração min_vel_x=0 -> nunca dá ré.
     # Com 0.0 aqui o smoother CORTAVA a ré do DWB p/ 0 e o robô não reposicionava.
-    min_velocity: [-0.5, 0.0, -2.5] # ré liberada no smoother; giro livre nos 2 sentidos
+    min_velocity: [-0.5, 0.0, -1.5] # ré liberada no smoother; giro (mais devagar) nos 2 sentidos
     max_accel: [3.0, 0.0, 4.0]
     max_decel: [-3.0, 0.0, -4.0]
     odom_topic: /odom_gt

@@ -23,7 +23,8 @@ def generate_launch_description():
         package="robot_state_publisher",
         executable="robot_state_publisher",
         parameters=[{"robot_description": robot_description, "use_sim_time": True}],
-        output="screen",
+        # Nó externo (não é do bb8_control): logs vão pro arquivo, não pra tela.
+        output="log",
     )
 
     return LaunchDescription([robot_state_publisher_node])

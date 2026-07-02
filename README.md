@@ -1,5 +1,7 @@
 # bb8_control
 
+![Video do robo buscando a bandeira](./simulacao.gif)
+
 Pacote ROS 2 (Humble) de **controle autônomo de um robô tipo BB8** para
 **exploração de ambiente por fronteiras** e **coleta de uma flag** em simulação
 Gazebo (Ignition).
@@ -39,25 +41,26 @@ no `src/` do workspace:
 
 | Repositório | Para quê | URL |
 |-------------|----------|-----|
-| `prm_2026` | mundo e modelos do Gazebo | https://github.com/matheusbg8/prm_2026 |
-| `m-explore-ros2` | nó `explore_lite` (exploração de fronteiras) | https://github.com/robo-friends/m-explore-ros2 |
+| `prm_2026` | mundo e modelos do Gazebo | <https://github.com/matheusbg8/prm_2026> |
+| `m-explore-ros2` | nó `explore_lite` (exploração de fronteiras) | <https://github.com/robo-friends/m-explore-ros2> |
 
 ## Instalação
 
 ```bash
 # 1. Clonar este pacote
-git clone <URL-deste-repo> bb8_control
+git clone https://github.com/plunkes/bb8
 
 # 2. Clonar as dependências externas (mundo + exploração)
 git clone https://github.com/matheusbg8/prm_2026.git
 git clone https://github.com/robo-friends/m-explore-ros2.git
 
 # 3. Instalar dependências ROS
-cd ~/prm_ws
+cd ~/ros_ws
 rosdep install --from-paths src --ignore-src -r -y
 
 # 4. Build
 colcon build --symlink-install
+# Talvez seja necessário fazer 2 vezes caso ocorra um erro
 
 # 5. Source
 source install/local_setup.bash
@@ -77,14 +80,14 @@ ros2 launch bb8_control explore_and_catch_flag.launch.py
 ### Launches auxiliares (debug)
 
 ```bash
-# Só o simulador + mundo
-ros2 launch bb8_control simulation.launch.py world:=arena_cilindros.sdf
+# Simulador
+ros2 launch bb8_control simulation.launch.py 
 
-# Só o robô (spawn + controladores + pontes + RViz) — exige a simulação rodando
-ros2 launch bb8_control spawn_robot.launch.py rviz:=true
+# Spawn robot
+ros2 launch bb8_control spawn_robot.launch.py
 
-# Só o robot_state_publisher (descrição/TFs)
-ros2 launch bb8_control robot_state_publisher.launch.py
+# Simulador + mundo
+ros2 launch bb8_control explore_and_catch_flag.launch.py
 ```
 
 ## Máquina de estados (FSM)

@@ -159,10 +159,10 @@
     <origin xyz="${caster_xoff} 0.0 ${-(base_height/2)}" rpy="0 0 0"/>
   </joint>
 
-  <!-- Very low friction on caster so it rotates freely -->
+  <!-- Low friction on caster (desliza mas não patina): mu 0.1 (era 0.01) -->
   <gazebo reference="front_caster">
-    <mu1>0.01</mu1>
-    <mu2>0.01</mu2>
+    <mu1>0.1</mu1>
+    <mu2>0.1</mu2>
     <kp>100000.0</kp>
     <kd>1.0</kd>
   </gazebo>
@@ -195,8 +195,8 @@
   </joint>
 
   <gazebo reference="rear_caster">
-    <mu1>0.01</mu1>
-    <mu2>0.01</mu2>
+    <mu1>0.1</mu1>
+    <mu2>0.1</mu2>
     <kp>100000.0</kp>
     <kd>1.0</kd>
   </gazebo>
